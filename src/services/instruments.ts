@@ -1,0 +1,1 @@
+export const INSTRUMENTS = ["EURUSD", "USDJPY", "GBPUSD", "USDCAD", "AUDUSD", "USDCHF", "NZDUSD", "GBPJPY", "XAUUSD", "XAGUSD", "CPPER", "PLTUM", "PALDM"] as const;
