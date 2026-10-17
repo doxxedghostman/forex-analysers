@@ -50,45 +50,23 @@ This schema was applied and transactionally verified during the repository split
 
 ## Deployment and safe cutover
 
-1. Deploy forex-cron with `SNAPSHOT_MODE=legacy` and `PUBLISH_ANALYSIS_INPUTS=true`. Its existing schedules and analysis still work while it fills handoff inputs.
-2. Import this private repository into the analysis Vercel account. Select Next.js, Node 22.x or newer supported Node runtime, and set the four variables above with `ANALYSIS_MODE=shadow`. Ensure the Vercel GitHub integration has access to this private repo. Shadow is the code default.
-3. Run every tier once in shadow mode after the collector has refreshed it. During weekends use authenticated `force=1` on both workers, collector first. Verify four timeframes, expected pairs, successful outcomes and `dryRun:true`. Verify sentiment with `dryRun=1` too.
-4. Pause collector snapshot and sentiment schedules briefly; keep the two-minute price job running. Wait for in-flight legacy snapshots to finish (maximum route duration 60 seconds).
-5. Redeploy forex-cron with `SNAPSHOT_MODE=data`. It now fetches/saves only; the old sentiment URL becomes a no-op. Keep the existing collector snapshot URLs and frequencies.
-6. Redeploy this worker with `ANALYSIS_MODE=active`. Resume collector schedules. Add analyser schedules below and move the sentiment schedule here. Confirm `published:true` and snapshot timestamps in the shared database before declaring cutover complete.
+**Use the existing collector cron-job.org jobs. Do not create nine analyser jobs.** The collector now calls this worker automatically after each successful data batch and forwards its existing sentiment job here. Normal collector URLs using `?secret=...` keep working without Advanced headers.
 
-Start analyser batches about 1-2 minutes after their corresponding collector batches. Example if collectors are on exact 5/15-minute boundaries:
+- On this analyser: use the existing shared Supabase variables, its own `CRON_SECRET`, and initially `ANALYSIS_MODE=shadow`.
+- On forex-cron: copy this analyser's CRON_SECRET into `ANALYSER_CRON_SECRET`. Keep its original collector CRON_SECRET unchanged.
+- For a controlled cutover, pause snapshot/sentiment timers, wait for in-flight legacy requests (maximum 60 seconds), and deploy collector `SNAPSHOT_MODE=data`. The two-minute price/alert timer stays running.
+- Manually test an existing collector snapshot URL. During weekends add authenticated `force=1` to that one URL. The collector saves candle inputs first, then calls this worker and includes its result. Shadow results must have `dryRun:true`; HTTP 200 alone is not proof of publication.
+- After verification, deploy this analyser with `ANALYSIS_MODE=active` and resume the same collector timers. Confirm published input versions and database timestamps. No new cron-job.org URLs or analyser timers are necessary.
 
-| Job | Frequency | Example analyser cron |
-| --- | --- | --- |
-| core | 5 minutes | `2-59/5 * * * *` |
-| extended_a/b/c | 15 minutes each | `2,17,32,47 * * * *` |
-| market-sentiment | 5 minutes | `3-59/5 * * * *` |
+The existing five-minute core job also rotates the new cross batches: D in one five-minute slot, E in the next, F+G in the next, then repeats. Thus all new crosses run every 15 minutes with no extra timers. Core/A/B/C cadence remains unchanged. Logical batch IDs stay core + A-G; they do not imply eight external analyser timers. Do not also schedule D-G manually, or run standalone analyser/sentiment timers, when using the automatic flow. Direct authenticated endpoints remain available for manual diagnostics.
 
-If the existing jobs are staggered differently, offset each analyser from its actual collector timer. Freshness/version checks protect against delays, not a guaranteed execution order. Supabase and provider failures can still cause missed updates. Use cron-job.org (the existing scheduler); Vercel native cron on Hobby is not suitable for these intervals.
-
-The configured list is 18 currency pairs plus 5 metals (23 instruments). The ten new crosses use tiers extended_d through extended_g, listed below. Market sentiment deliberately retains its original 13-instrument breadth weights: cross-pair Long signals do not all imply risk-on, so adding new symbols does not silently change that scoring model.
+The configured list is 18 currency pairs plus 5 metals. Market sentiment intentionally retains the original 13-instrument breadth weights instead of assigning arbitrary risk-on weights to new crosses. All pair-analysis inputs are from the collector's Yahoo source; no DeepSeek/Firebase variables or external candle requests are added here. The main app keeps reading the same snapshots and sentiment.
 
 ## Rollback
 
-Pause analyser/sentiment schedules, allow in-flight analyser requests to finish, redeploy with `ANALYSIS_MODE=shadow`, then redeploy forex-cron with `SNAPSHOT_MODE=legacy` and resume its original snapshot/sentiment schedules. Leave the additive schema in place. The legacy code remains in forex-cron for this rollback; data-only mode never imports it. Do not run both writers actively during cutover.
+Pause collector snapshot/sentiment timers and allow requests to finish, redeploy this analyser with `ANALYSIS_MODE=shadow`, redeploy forex-cron with `SNAPSHOT_MODE=legacy`, and resume the same existing jobs. Keep additive handoff schema. The collector retains dormant legacy analysis for this purpose.
 
 ## Validation
 
 `npm ci`, `npm test`, `npm run build`.
-Tests compare the new analysis output against the original snapshot implementation on deterministic forex and metals inputs, reject bad/stale inputs, check shadow/auth controls and ensure prices are excluded from analysis writes. `tests/fixtures` contains the frozen pre-split implementation solely for regression tests; it is not deployed as a route. `[analysis-cpu]` logs report process-wide CPU deltas; concurrent invocations can contribute, so these are diagnostic measurements rather than exact per-request billing.
-
-## Additional cross-pair schedules
-
-All prices and candles use each direct Yahoo symbol (`PAIR=X`, without inversion). The analyser consumes the collector's saved inputs and never substitutes a different market feed. Four-hour candles remain resampled from Yahoo hourly bars. Native charts keep the existing daily-FX repair behavior; TradingView widgets remain separately labelled reference charts.
-
-| Tier | Pairs | Collector URL | Analyser URL | Cadence |
-| --- | --- | --- | --- | --- |
-| extended_d | EURJPY, EURGBP, AUDJPY | `/api/cron/snapshot?tier=extended_d` | `/api/cron/analyse?tier=extended_d` | 15 minutes |
-| extended_e | EURAUD, GBPAUD, EURCHF | `/api/cron/snapshot?tier=extended_e` | `/api/cron/analyse?tier=extended_e` | 15 minutes |
-| extended_f | CADJPY, CHFJPY, AUDCAD | `/api/cron/snapshot?tier=extended_f` | `/api/cron/analyse?tier=extended_f` | 15 minutes |
-| extended_g | NZDJPY | `/api/cron/snapshot?tier=extended_g` | `/api/cron/analyse?tier=extended_g` | 15 minutes |
-
-This yields eight snapshot batches on each worker: core plus extended_a through extended_g. The collector also has its two-minute price/alert job; the analyser has sentiment. Stagger collector batches (e.g. at minutes 0/1/2/3 modulo 15 for D/E/F/G) and schedule each matching analyser about two minutes later. If the collector still uses legacy mode, it already calculates those snapshots: keep the new analyser in shadow until the documented cutover. No additional secrets are needed.
-
-After deployment, force one authenticated collector call per new tier during the weekend, then shadow-run its analyser immediately. Expect three successful instruments per tier except G (one). Check real provider timestamps and candle counts before treating the feeds as verified live; Yahoo may rate-limit calls. Ordinary scheduled URLs must omit force. Current prices come from Yahoo `regularMarketPrice`/`regularMarketTime`, independently of the last candle's close, so those values can differ while still using the same source.
+Tests compare the analysis engine to the frozen old implementation, reject malformed/stale input, preserve quote ownership, check version publication and verify all ten new crosses without external candle requests. `[analysis-cpu]` is process-wide diagnostic timing, not exact per-request billing. Source mappings are direct Yahoo PAIR=X; four-hour bars remain resampled from Yahoo hourly bars. Live development probes hit HTTP 429, so deployed collector logs are still needed to verify real provider timestamps and history completeness. Native charts retain the existing daily-FX repair behavior; separately labelled TradingView reference widgets are not the native data source.
