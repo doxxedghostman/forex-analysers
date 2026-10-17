@@ -67,7 +67,7 @@ Start analyser batches about 1-2 minutes after their corresponding collector bat
 
 If the existing jobs are staggered differently, offset each analyser from its actual collector timer. Freshness/version checks protect against delays, not a guaranteed execution order. Supabase and provider failures can still cause missed updates. Use cron-job.org (the existing scheduler); Vercel native cron on Hobby is not suitable for these intervals.
 
-The current list remains 13 instruments. Add new pairs to both workers' instrument and tier configuration only after data-source verification; neither repo silently expands the list during this migration. Sentiment currently weights only those original 13 instruments and needs a deliberate weighting decision for new crosses.
+The configured list is 18 currency pairs plus 5 metals (23 instruments). The ten new crosses use tiers extended_d through extended_g, listed below. Market sentiment deliberately retains its original 13-instrument breadth weights: cross-pair Long signals do not all imply risk-on, so adding new symbols does not silently change that scoring model.
 
 ## Rollback
 
@@ -77,3 +77,18 @@ Pause analyser/sentiment schedules, allow in-flight analyser requests to finish,
 
 `npm ci`, `npm test`, `npm run build`.
 Tests compare the new analysis output against the original snapshot implementation on deterministic forex and metals inputs, reject bad/stale inputs, check shadow/auth controls and ensure prices are excluded from analysis writes. `tests/fixtures` contains the frozen pre-split implementation solely for regression tests; it is not deployed as a route. `[analysis-cpu]` logs report process-wide CPU deltas; concurrent invocations can contribute, so these are diagnostic measurements rather than exact per-request billing.
+
+## Additional cross-pair schedules
+
+All prices and candles use each direct Yahoo symbol (`PAIR=X`, without inversion). The analyser consumes the collector's saved inputs and never substitutes a different market feed. Four-hour candles remain resampled from Yahoo hourly bars. Native charts keep the existing daily-FX repair behavior; TradingView widgets remain separately labelled reference charts.
+
+| Tier | Pairs | Collector URL | Analyser URL | Cadence |
+| --- | --- | --- | --- | --- |
+| extended_d | EURJPY, EURGBP, AUDJPY | `/api/cron/snapshot?tier=extended_d` | `/api/cron/analyse?tier=extended_d` | 15 minutes |
+| extended_e | EURAUD, GBPAUD, EURCHF | `/api/cron/snapshot?tier=extended_e` | `/api/cron/analyse?tier=extended_e` | 15 minutes |
+| extended_f | CADJPY, CHFJPY, AUDCAD | `/api/cron/snapshot?tier=extended_f` | `/api/cron/analyse?tier=extended_f` | 15 minutes |
+| extended_g | NZDJPY | `/api/cron/snapshot?tier=extended_g` | `/api/cron/analyse?tier=extended_g` | 15 minutes |
+
+This yields eight snapshot batches on each worker: core plus extended_a through extended_g. The collector also has its two-minute price/alert job; the analyser has sentiment. Stagger collector batches (e.g. at minutes 0/1/2/3 modulo 15 for D/E/F/G) and schedule each matching analyser about two minutes later. If the collector still uses legacy mode, it already calculates those snapshots: keep the new analyser in shadow until the documented cutover. No additional secrets are needed.
+
+After deployment, force one authenticated collector call per new tier during the weekend, then shadow-run its analyser immediately. Expect three successful instruments per tier except G (one). Check real provider timestamps and candle counts before treating the feeds as verified live; Yahoo may rate-limit calls. Ordinary scheduled URLs must omit force. Current prices come from Yahoo `regularMarketPrice`/`regularMarketTime`, independently of the last candle's close, so those values can differ while still using the same source.
