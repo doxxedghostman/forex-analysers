@@ -163,3 +163,10 @@ test('recovers an unanalysed recent input from another tier without Yahoo reques
   assert.equal(writes.length,1);assert.equal(writes[0].name,'publish_market_analysis');
  }finally{global.fetch=original;}
 });
+
+test('recovery ignores expired saved inputs instead of replaying obsolete analysis',async()=>{
+ const now=Date.now();const stale={pair:'NZDUSD',tier:'extended_b',fetched_at:new Date(now-60*60000).toISOString()};
+ const db=fakeDb(q=>({data:q.table==='market_analysis_inputs'?[stale]:[],error:null}));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db}})(path.join(root,'src/services/analysisService.ts'));
+ assert.deepEqual(await service.recoverPendingAnalysis('core',2,now),[]);
+});
