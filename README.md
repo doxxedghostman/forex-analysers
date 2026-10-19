@@ -11,7 +11,7 @@ The main app keeps reading the same Supabase `market_snapshots` and `market_sent
 - Publish analysis through a version-checked database function. Never overwrite live prices, price-source timestamps or alert state.
 - Calculate market sentiment using snapshot breadth, Yahoo DXY/VIX and cached CFTC positioning.
 
-Pair analysis never downloads candles, calls DeepSeek, or sends notifications. Missing, malformed or stale inputs leave the previous successful snapshot untouched. A missing timeframe cannot trigger a Yahoo fallback. Snapshot formulas are unchanged; this move does not fix or retune the strategy.
+Pair analysis never downloads candles, calls DeepSeek, or sends notifications. Missing, materially malformed or stale inputs leave the previous successful snapshot untouched. Only daily spot-FX candles with very small Yahoo high/low boundary inconsistencies (at most 0.1% of price AND 15% of reported bar range) are normalized in a non-mutating, analysis-only copy. Other timeframes and metals remain strictly validated. The original raw Yahoo inputs and cached history are never rewritten, and rejected inputs still cannot publish. The analysis-only correction can slightly change daily indicators. The analyser logs `[analysis-daily-ohlc-normalized]` when it repairs an input. A missing timeframe cannot trigger a Yahoo fallback. Snapshot formulas are unchanged; this move does not fix or retune the strategy.
 
 The collector owns the deep chart caches, current prices and alerts. The handoff table preserves the raw analysis windows rather than replacing them with deeper/repaired chart history, which could change indicator results. The input timestamp is a fetch version, not a candle-close timestamp. Source age is checked separately during open market hours.
 

@@ -89,3 +89,49 @@ test('sentiment shadow run fetches its sources without writing; active saves the
   assert.equal(writes[0].table,'market_sentiment');assert.ok(requests.some(url=>url.includes('DX-Y.NYB')));assert.ok(requests.some(url=>url.includes('%5EVIX')));
  }finally{global.fetch=original;}
 });
+
+test('accepts small real-world Yahoo daily FX boundary mismatches without mutating saved candles',()=>{
+ const now=Date.now(), candles=fixture();
+ const original={...candles['1d'][40]};
+ // Measured Yahoo daily FX row from Dec 2025: low slightly above close.
+ candles['1d'][40]={...original,open:1.1628988981246948,high:1.1675832271575928,
+   low:1.1628177165985107,close:1.1627906560897827};
+ const row=input(candles);
+ const copy=JSON.parse(JSON.stringify(row.candles['1d'][40]));
+ const windows=validation.validateAnalysisInput(row,'EURUSD','core',now);
+ assert.deepEqual(row.candles['1d'][40],copy);
+ assert.notStrictEqual(windows['1d'][40],row.candles['1d'][40]);
+ assert.equal(windows['1d'][40].low,windows['1d'][40].close);
+ assert.equal(windows['1d'][40].high,copy.high);
+ assert.equal(windows['15m'],candles['15m']);
+ assert.equal(windows['1h'],candles['1h']);
+ assert.equal(windows['4h'],candles['4h']);
+});
+test('rejects large daily FX deviations, excessive range-relative changes, and malformed intraday candles',()=>{
+ const now=Date.now(), good=fixture();
+ const build=(tf,index,bar)=>({ ...input(), candles: {...good, [tf]: good[tf].map((c,i)=>i===index?bar:c)} });
+ const original=good['1d'][40];
+ assert.throws(()=>validation.validateAnalysisInput(build('1d',40,{
+   ...original,high:original.open*0.8
+ }), 'EURUSD','core',now),/Malformed or unordered/);
+ assert.throws(()=>validation.validateAnalysisInput(build('1d',40,{
+   ...original,open:100,close:100.09,high:100.07,low:100
+ }), 'EURUSD','core',now),/Malformed or unordered/);
+ const minute=good['15m'][40];
+ assert.throws(()=>validation.validateAnalysisInput(build('15m',40,{
+   ...minute,high:Math.max(minute.open,minute.close)-0.00001
+ }), 'EURUSD','core',now),/Malformed or unordered/);
+});
+test('never normalizes invalid metals, non-finite daily prices or inverted ranges',()=>{
+ const now=Date.now(), base=fixture();
+ function bad(tf,change){const bars={...base,[tf]:base[tf].map((b,i)=>i===40?{...b,...change}:b)};
+  return {pair:'XAUUSD',tier:'core',fetched_at:new Date(now).toISOString(),candles:bars};}
+ const gold=base['1d'][40];
+ assert.throws(()=>validation.validateAnalysisInput(
+  bad('1d',{high:Math.max(gold.open,gold.close)-0.00001}),'XAUUSD','core',now
+ ),/Malformed or unordered/);
+ const fx={...input(base),candles:{...base,'1d':base['1d'].map((b,i)=>i===40?{...b,high:NaN}:b)}};
+ assert.throws(()=>validation.validateAnalysisInput(fx,'EURUSD','core',now),/Malformed or unordered/);
+ const reversed={...input(base),candles:{...base,'1d':base['1d'].map((b,i)=>i===40?{...b,high:b.low-0.001}:b)}};
+ assert.throws(()=>validation.validateAnalysisInput(reversed,'EURUSD','core',now),/Malformed or unordered/);
+});
