@@ -170,3 +170,20 @@ test('recovery ignores expired saved inputs instead of replaying obsolete analys
  const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db}})(path.join(root,'src/services/analysisService.ts'));
  assert.deepEqual(await service.recoverPendingAnalysis('core',2,now),[]);
 });
+
+test('independent analyser processes pending tiers without collection HTTP',async()=>{
+ const rows=[{pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString()},
+  {pair:'NZDUSD',tier:'extended_b',fetched_at:new Date().toISOString()}];
+ const db=fakeDb(q=>{
+  if(q.table==='market_analysis_inputs')return {data:q.filters.length?{...rows.find(r=>r.pair===q.filters[0][2]),candles:fixture()}:rows,error:null};
+  if(q.table==='market_snapshots')return {data:q.filters.length?{analysis_input_at:null}:[],error:null};
+  return {data:null,error:null};
+ });
+ db.rpc=async()=>({data:true,error:null});
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{
+  computeSnapshot:async(pair,tier)=>({tier,direction:'Long',confidence_score:75,live_price:1.1,updated_at:new Date().toISOString()})
+ }})(path.join(root,'src/services/analysisService.ts'));
+ const result=await service.runAllPendingAnalysis(false);
+ assert.equal(result.total,2);assert.equal(result.succeeded,2);
+ assert.equal(result.failed.length,0);
+});
