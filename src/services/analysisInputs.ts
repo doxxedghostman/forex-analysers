@@ -56,7 +56,8 @@ export function validateAnalysisInput(input: AnalysisInput | null, pair: string,
     const seconds = { "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 }[tf];
     if (!isForexMarketClosed(new Date(now)) && now - previous * 1000 > seconds * 1000 + maxAge)
       throw new Error(`Provider candles are stale: ${tf}`);
-    windows[tf] = validated;
+    // Preserve original arrays (and indicator output) for unchanged windows.
+    windows[tf] = repairs ? validated : candles;
   }
   return windows;
 }
