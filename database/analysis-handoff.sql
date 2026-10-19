@@ -33,11 +33,22 @@ grant execute on function public.publish_market_analysis_input(text,text,jsonb,t
 create or replace function public.publish_market_analysis(
   p_pair text, p_input_at timestamptz, p_analysis jsonb
 ) returns boolean language plpgsql security invoker set search_path = '' as $$
-declare current_input_at timestamptz; changed integer;
+declare
+  current_input_at timestamptz;
+  current_candles jsonb;
+  source_timestamp numeric;
+  changed integer;
 begin
-  select fetched_at into current_input_at from public.market_analysis_inputs
-  where pair=p_pair for update;
+  select fetched_at, candles into current_input_at, current_candles
+  from public.market_analysis_inputs where pair=p_pair for update;
   if current_input_at is null or current_input_at <> p_input_at then return false; end if;
+  if jsonb_typeof(current_candles->'15m') <> 'array' or jsonb_array_length(current_candles->'15m') = 0 then
+    raise exception 'Missing 15m source candles for %', p_pair;
+  end if;
+  source_timestamp := (current_candles->'15m'->-1->>'timestamp')::numeric;
+  if source_timestamp is null or source_timestamp <= 0 or source_timestamp > extract(epoch from clock_timestamp() + interval '5 minutes') then
+    raise exception 'Invalid source timestamp for %', p_pair;
+  end if;
   update public.market_snapshots as existing set
     tier=computed.tier,
     anchor_interval=computed.anchor_interval,
@@ -58,6 +69,7 @@ begin
     is_stale=false,
     last_error=null,
     updated_at=clock_timestamp(),
+    source_candle_at=to_timestamp(source_timestamp::double precision),
     analysis_input_at=p_input_at
   from jsonb_populate_record(null::public.market_snapshots,p_analysis) as computed
   where existing.pair=p_pair
