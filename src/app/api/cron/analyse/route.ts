@@ -3,6 +3,8 @@ import { runAnalysisBatch } from "@/services/analysisService";
 import { TIER_CONFIG, type Tier } from "@/services/snapshotConfig";
 import { isForexMarketClosed } from "@/lib/marketHours";
 export const maxDuration = 60;
+// Keep the analysis worker close to the Supabase project in Ireland.
+export const preferredRegion = 'dub1';
 export async function GET(req: NextRequest) {
   const secret = req.headers.get("x-cron-secret") || req.nextUrl.searchParams.get("secret");
   if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET)

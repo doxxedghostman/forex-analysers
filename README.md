@@ -26,6 +26,8 @@ The collector owns the deep chart caches, current prices and alerts. The handoff
 
 No DeepSeek or Firebase environment variables are needed. No API key is used for the public DXY/VIX/CFTC sources.
 
+The analysis route prefers Vercel's Dublin region near the Supabase project where available. This changes execution placement only: validation, indicator formulas, publication version checks, and market-sentiment scheduling are unchanged. Monitor deployed function region in Vercel to confirm routing.
+
 ## Routes
 
 Authenticate cron calls with the `x-cron-secret` header. The existing `secret` query parameter is supported for scheduler compatibility, but headers avoid putting the secret in URLs.
