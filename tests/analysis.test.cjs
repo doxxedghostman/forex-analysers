@@ -135,3 +135,31 @@ test('never normalizes invalid metals, non-finite daily prices or inverted range
  const reversed={...input(base),candles:{...base,'1d':base['1d'].map((b,i)=>i===40?{...b,high:b.low-0.001}:b)}};
  assert.throws(()=>validation.validateAnalysisInput(reversed,'EURUSD','core',now),/Malformed or unordered/);
 });
+
+test('recovers an unanalysed recent input from another tier without Yahoo requests',async()=>{
+ const pending={pair:'NZDUSD',tier:'extended_b',fetched_at:new Date().toISOString(),candles:fixture()};
+ const done={pair:'GBPUSD',tier:'core',fetched_at:new Date().toISOString()};
+ const writes=[];let providerCalls=0;
+ const db=fakeDb(q=>{
+  if(q.table==='market_analysis_inputs'){
+   if(q.filters.length)return {data:pending,error:null};
+   return {data:[{pair:pending.pair,tier:pending.tier,fetched_at:pending.fetched_at},done],error:null};
+  }
+  if(q.table==='market_snapshots'){
+   if(q.filters.length)return {data:{analysis_input_at:null},error:null};
+   return {data:[{pair:done.pair,analysis_input_at:done.fetched_at}],error:null};
+  }
+  return {data:null,error:null};
+ });
+ db.rpc=async(name,args)=>{writes.push({name,args});return {data:true,error:null};};
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{
+  computeSnapshot:async()=>({tier:'extended_b',direction:'Long',confidence_score:70,live_price:1.2,updated_at:new Date().toISOString()})
+ }})(path.join(root,'src/services/analysisService.ts'));
+ const original=global.fetch;global.fetch=async()=>{providerCalls++;throw Error('No Yahoo');};
+ try {
+  const results=await service.recoverPendingAnalysis('core');
+  assert.equal(results.length,1);assert.equal(results[0].pair,'NZDUSD');
+  assert.equal(results[0].published,true);assert.equal(providerCalls,0);
+  assert.equal(writes.length,1);assert.equal(writes[0].name,'publish_market_analysis');
+ }finally{global.fetch=original;}
+});
