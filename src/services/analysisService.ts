@@ -9,12 +9,12 @@ export async function analysePair(pair: string, tier: Tier, dryRun = true) {
       .select("pair,tier,candles,fetched_at").eq("pair", pair).maybeSingle();
     if (error) throw error;
     const input = data as AnalysisInput | null;
-    const windows = validateAnalysisInput(input, pair, tier);
     const { data: previous, error: previousError } = await supabase.from("market_snapshots")
       .select("analysis_input_at").eq("pair", pair).maybeSingle();
     if (previousError) throw previousError;
     if (previous?.analysis_input_at && Date.parse(previous.analysis_input_at) >= Date.parse(input!.fetched_at))
       return { pair, ok: true, skipped: true, reason: "Input already analysed" };
+    const windows = validateAnalysisInput(input, pair, tier);
     const start = process.cpuUsage(); const wall = performance.now();
     const snapshot = await computeSnapshot(pair, tier, windows);
     const cpu = process.cpuUsage(start);
@@ -87,4 +87,29 @@ export async function runAnalysisBatch(tier: Tier, dryRun = true) {
   }
   return { tier, dryRun, total: results.length, succeeded: results.filter(r => r.ok).length,
     failed: results.filter(r => !r.ok), results, recovery };
+}
+
+/** Independent five-minute analyser. Only pending input versions are read, and
+ *  one bad instrument never blocks another. No Yahoo/collector HTTP calls. */
+export async function runAllPendingAnalysis(dryRun = true) {
+  const db = getSupabaseAdmin();
+  const [inputs, snapshots] = await Promise.all([
+    db.from('market_analysis_inputs').select('pair,tier,fetched_at'),
+    db.from('market_snapshots').select('pair,analysis_input_at'),
+  ]);
+  if (inputs.error || snapshots.error) throw new Error(`Failed to load pending analysis: ${inputs.error?.message || snapshots.error?.message}`);
+  const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
+  const pending = (inputs.data ?? []).filter(row =>
+    Object.hasOwn(TIER_CONFIG, row.tier) && Number.isFinite(Date.parse(row.fetched_at))
+    && Date.parse(row.fetched_at) > (completed.get(String(row.pair)) ?? 0)
+  ).sort((a,b) => Date.parse(a.fetched_at) - Date.parse(b.fetched_at));
+  console.info('[analysis-pending]', { count: pending.length, dryRun });
+  const results: Awaited<ReturnType<typeof analysePair>>[] = [];
+  // Bound in-flight analysis while avoiding an unbounded Promise.all burst.
+  for (let i = 0; i < pending.length; i += 3) {
+    const group = await Promise.all(pending.slice(i, i + 3).map(row => analysePair(row.pair, row.tier as Tier, dryRun)));
+    results.push(...group);
+  }
+  return { all: true, dryRun, total: pending.length, succeeded: results.filter(x => x.ok).length,
+    failed: results.filter(x => !x.ok), results };
 }
