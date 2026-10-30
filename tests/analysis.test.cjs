@@ -17,7 +17,7 @@ test('provider staleness is detected on a weekday despite a new fetch timestamp'
  assert.throws(()=>validation.validateAnalysisInput(good,'EURUSD','core',now),/Provider candles are stale/);
 });
 for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPPER','extended_c',4.5],['PLTUM','extended_c',1000]]){
- test('saved-input analysis preserves legacy snapshot output for '+pair,async()=>{
+ test('saved-input analysis preserves legacy non-pattern output for '+pair,async()=>{
   const candles=fixture(base);let oldSnapshot;let networkCalls=0;
   const db=fakeDb(q=>{
    if(q.table==='market_snapshots'&&q.operation==='upsert')oldSnapshot=q.payload;
@@ -42,6 +42,11 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
    const engine=loader()(path.join(root,'src/services/analysisEngine.ts'));
    const fresh=await engine.computeSnapshot(pair,tier,candles);
    delete fresh.updated_at;delete oldSnapshot.updated_at;
+   // Pattern votes intentionally changed: validate them in scan-patterns.test.cjs.
+   delete fresh.patterns_by_tf;delete oldSnapshot.patterns_by_tf;
+   for(const summary of Object.values(fresh.multi_tf)){
+    assert.equal(summary.patternVersion,2);delete summary.patternVersion;
+   }
    assert.deepEqual(JSON.parse(JSON.stringify(fresh)),JSON.parse(JSON.stringify(oldSnapshot)));
    assert.equal(networkCalls,0);
   }finally{global.fetch=originalFetch;global.setTimeout=realTimeout;}
@@ -187,3 +192,4 @@ test('independent analyser processes pending tiers without collection HTTP',asyn
  assert.equal(result.total,2);assert.equal(result.succeeded,2);
  assert.equal(result.failed.length,0);
 });
+

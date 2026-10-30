@@ -3,7 +3,7 @@ import { predictTrade, PredictionResult } from "./aiPredictor";
 import { computeIndicators, IndicatorReport } from "./marketAnalyzer";
 import { getPdBias, isKillzoneActive, detectStructure, detectLiquidity } from "./smcAnalysis";
 import { toAnalysisSwingPoints, splitSwings, summarizeMarketStructure } from "./structureBridge";
-import { detectChartPatterns } from "./chartPatterns";
+import { CHART_PATTERN_VERSION, detectChartPatterns } from "./chartPatterns";
 import type { MarketStructure, PatternSet } from "./analysisTypes";
 import { SNAPSHOT_TIMEFRAMES, ANCHOR_INTERVAL, type Tier } from "./snapshotConfig";
 
@@ -104,9 +104,12 @@ function analyzeTimeframeStructureAndPatterns(
   const liquidity = detectLiquidity(candles);
   const structure = summarizeMarketStructure(candles, rawStructure, liquidity);
 
-  const analysisSwings = toAnalysisSwingPoints(candles, rawStructure.swings);
+  // The saved bundle includes a forming candle; pattern validation uses closed bars only.
+  const patternCandles = candles.slice(0, -1);
+  const patternStructure = detectStructure(patternCandles);
+  const analysisSwings = toAnalysisSwingPoints(patternCandles, patternStructure.swings);
   const { highs, lows } = splitSwings(analysisSwings);
-  const patterns = detectChartPatterns(highs, lows);
+  const patterns = detectChartPatterns(highs, lows, patternCandles);
 
   return { structure, patterns };
 }
@@ -116,7 +119,7 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
   const anchorCandles = multiTfCandles[ANCHOR_INTERVAL];
     const multiTfSummary: Record<
       string,
-      { indicators: Partial<IndicatorReport>; lastClose: number | null }
+      { indicators: Partial<IndicatorReport>; lastClose: number | null; patternVersion?: number }
     > = {};
     // NEW: per-timeframe structure (BOS/CHoCH/equal highs/lows/sweep) and
     // chart patterns (double top/bottom, H&S) — previously structure was
@@ -146,6 +149,7 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
       const { structure, patterns } = analyzeTimeframeStructureAndPatterns(candles);
       structureByTf[tf] = structure;
       patternsByTf[tf] = patterns;
+      multiTfSummary[tf].patternVersion = CHART_PATTERN_VERSION;
     }
 
     const dailyCandles = multiTfCandles["1d"];
@@ -206,3 +210,4 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
         updated_at: new Date().toISOString(),
       };
 }
+
