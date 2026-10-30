@@ -5,6 +5,23 @@
 
 import { CONFIDENCE_THRESHOLD, DetectionResult, PatternSet, SwingPoint } from "./analysisTypes";
 
+export const CHART_PATTERN_VERSION = 2;
+const MAX_PATTERN_AGE_BARS = 5;
+type PatternCandle = { close: number; timestamp: number };
+
+// A formation is actionable only while recent and intact. Callers pass completed candles.
+function stillValid(result: DetectionResult, pivot: SwingPoint | undefined,
+  candles: readonly PatternCandle[], invalidation: number, direction: 'bullish' | 'bearish'): DetectionResult {
+  if (!result.detected || !pivot || !Number.isFinite(invalidation) || invalidation <= 0
+      || !Number.isInteger(pivot.index) || pivot.index < 0 || pivot.index >= candles.length
+      || candles.length - 1 - pivot.index > MAX_PATTERN_AGE_BARS
+      || candles[pivot.index]?.timestamp !== pivot.time) return { ...EMPTY };
+  const later = candles.slice(pivot.index + 1);
+  if (later.some(c => !Number.isFinite(c.close) || c.close <= 0
+      || (direction === 'bearish' ? c.close > invalidation : c.close < invalidation))) return { ...EMPTY };
+  return result;
+}
+
 const EMPTY: DetectionResult = { detected: false, confidence: 0 };
 
 function emptyPatternSet(): PatternSet {
@@ -169,14 +186,21 @@ function detectInverseHeadAndShoulders(highs: SwingPoint[], lows: SwingPoint[]):
  */
 export function detectChartPatterns(
   highs: SwingPoint[],
-  lows: SwingPoint[]
+  lows: SwingPoint[],
+  candles: readonly PatternCandle[] = []
 ): PatternSet {
   const patterns = emptyPatternSet();
 
-  patterns.double_top = detectDoubleTop(highs, lows);
-  patterns.double_bottom = detectDoubleBottom(highs, lows);
-  patterns.head_and_shoulders = detectHeadAndShoulders(highs, lows);
-  patterns.inverse_head_and_shoulders = detectInverseHeadAndShoulders(highs, lows);
+  // Without the candle context we cannot establish recency or invalidation.
+  if (!candles.length || [...highs, ...lows].some(s => !Number.isFinite(s.price) || s.price <= 0)) return patterns;
+  patterns.double_top = stillValid(detectDoubleTop(highs, lows), highs.at(-1), candles,
+    Math.max(...highs.slice(-2).map(s => s.price)), 'bearish');
+  patterns.double_bottom = stillValid(detectDoubleBottom(highs, lows), lows.at(-1), candles,
+    Math.min(...lows.slice(-2).map(s => s.price)), 'bullish');
+  patterns.head_and_shoulders = stillValid(detectHeadAndShoulders(highs, lows), highs.at(-1), candles,
+    highs.at(-2)?.price ?? NaN, 'bearish');
+  patterns.inverse_head_and_shoulders = stillValid(detectInverseHeadAndShoulders(highs, lows), lows.at(-1), candles,
+    lows.at(-2)?.price ?? NaN, 'bullish');
 
   // engulfing, triangles, flags, wedges: TODO — next pass
   return patterns;
