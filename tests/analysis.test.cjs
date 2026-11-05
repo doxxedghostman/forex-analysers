@@ -193,3 +193,16 @@ test('independent analyser processes pending tiers without collection HTTP',asyn
  assert.equal(result.failed.length,0);
 });
 
+
+test('malformed daily metal diagnostics identify the exact pair, candle and OHLC failure',()=>{
+ const now=Date.now();
+ for(const [pair,tier,base] of [['XAUUSD','core',2400],['XAGUSD','extended_b',30],['PLTUM','extended_c',1000],['PALDM','extended_c',1000]]){
+  const candles=fixture(base);const index=37;const original=candles['1d'][index];
+  candles['1d'][index]={...original,high:Math.min(original.open,original.close)-0.0001};
+  const row={...input(candles),pair,tier};
+  assert.throws(
+   ()=>validation.validateAnalysisInput(row,pair,tier,now),
+   new RegExp(`Malformed or unordered saved candles: ${pair} 1d index=${index} timestamp=${original.timestamp} reason=high is below open, close, or low`)
+  );
+ }
+});
