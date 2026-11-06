@@ -98,3 +98,33 @@ Logs: `[short-analysis-pending]`, `[short-analysis-published]`,
 `[short-analysis-failed]`. Shadow mode computes without publishing. The route's
 `shortTimeframes` result lists publications, skipped work and unavailable data.
 
+
+## Calculation resource optimisation
+
+ADX rolling sums are computed once per series using the original arithmetic.
+Closed-candle structure/liquidity results are shared between patterns, the 4H
+summary and setup generation. A 160-entry in-memory LRU cache reuses indicators,
+structure and patterns only when the complete timestamp/OHLCV window matches.
+Historical corrections invalidate it. Results are copied so callers cannot mutate
+cached values. Cache reuse is best-effort per warm process; a cold process always
+calculates normally. It stores no cross-request prediction, clock-dependent
+killzone state or publication markers. All timeframe setups still rebuild with
+current multi-timeframe context.
+
+Short analysis publishes only frames newer than their own publication markers;
+an unchanged available short frame remains alignment context for its sibling.
+The all-pending batch shares already-loaded publication markers with pair jobs
+and the short pass, removing up to 24 metadata requests for a fully pending
+23-instrument batch. Postgres remains the final authority for concurrent versions.
+Freshness checks run before an already-analysed input can be skipped.
+
+No database migration, environment variable or cron change is needed.
+Validation: 47 tests pass and the production build succeeds. Full before/after
+long and short outputs matched for EURUSD, USDJPY, XAUUSD and PLTUM, excluding
+only the generated longer-snapshot timestamp. Seven-sample local median CPU
+benchmarks per instrument (not Vercel billing) were:
+
+| Work | Original | Optimised, changing windows | Optimised, identical windows |
+| --- | ---: | ---: | ---: |
+| Four longer frames | 170.7 ms | 20.1 ms | 4.6 ms |
+| Both short frames | 59.4 ms | 7.9 ms | 2.0 ms |

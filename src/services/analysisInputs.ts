@@ -19,12 +19,17 @@ function normalizeMinorDailyFxBoundary(candle: Candle): Candle {
   return { ...candle, high: correctedHigh, low: correctedLow };
 }
 
-export function validateAnalysisInput(input: AnalysisInput | null, pair: string, tier: Tier, now = Date.now()) {
+export function validateAnalysisInputMetadata(input: AnalysisInput | null, pair: string, tier: Tier, now = Date.now()): asserts input is AnalysisInput {
   if (!input || input.pair !== pair || input.tier !== tier) throw new Error("Missing or mismatched saved input");
   const fetchedAt = Date.parse(input.fetched_at);
   const maxAge = TIER_CONFIG[tier].refreshMinutes * STALE_MULTIPLIER * 60_000;
   if (!Number.isFinite(fetchedAt) || fetchedAt > now + 60_000 || now - fetchedAt > maxAge)
     throw new Error("Saved input is stale or has an invalid fetch timestamp");
+}
+
+export function validateAnalysisInput(input: AnalysisInput | null, pair: string, tier: Tier, now = Date.now()) {
+  validateAnalysisInputMetadata(input, pair, tier, now);
+  const maxAge = TIER_CONFIG[tier].refreshMinutes * STALE_MULTIPLIER * 60_000;
   const windows: Record<string, Candle[]> = {};
   for (const tf of SNAPSHOT_TIMEFRAMES) {
     const candles = input.candles?.[tf];
@@ -78,3 +83,4 @@ export function validateAnalysisInput(input: AnalysisInput | null, pair: string,
   }
   return windows;
 }
+

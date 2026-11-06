@@ -29,7 +29,8 @@ export function validateShortCandles(tf: ShortFrame, candles: Candle[], now = Da
   return previous;
 }
 
-export async function runPendingShortAnalysis(dryRun = true, tier?: Tier) {
+type PublishedSources = { pair: string; short_analysis_sources?: Record<string, number> | null };
+export async function runPendingShortAnalysis(dryRun = true, tier?: Tier, knownSnapshots?: PublishedSources[]) {
   const db = getSupabaseAdmin();
   const outcomes: Outcome[] = [];
   const unavailable: Array<{ pair: string; timeframe: string; reason: string }> = [];
@@ -38,7 +39,8 @@ export async function runPendingShortAnalysis(dryRun = true, tier?: Tier) {
     // download the listener's 2,000-bar JSON caches to discover pending work.
     const [sources, snapshots] = await Promise.all([
       db.from('market_candle_cache').select('pair,timeframe,source_candle_at').in('timeframe', [...SHORT_TIMEFRAMES]),
-      db.from('market_snapshots').select('pair,short_analysis_sources'),
+      knownSnapshots === undefined ? db.from('market_snapshots').select('pair,short_analysis_sources')
+        : Promise.resolve({ data: knownSnapshots, error: null }),
     ]);
     if (sources.error || snapshots.error) throw new Error(sources.error?.message || snapshots.error?.message);
     const done = new Map((Array.isArray(snapshots.data) ? snapshots.data : []).map(row => [row.pair, row.short_analysis_sources ?? {}]));
@@ -65,18 +67,22 @@ export async function runPendingShortAnalysis(dryRun = true, tier?: Tier) {
         if (error) throw error;
         if (!bundle || typeof bundle !== 'object') throw new Error('Missing saved Deriv analysis bundle');
         const windows: Record<string, Candle[]> = {};
+        const contextWindows: Record<string, Candle[]> = {};
         const versions: Record<string, number> = {};
         for (const tf of SHORT_TIMEFRAMES) {
           const bars = bundle.candles?.[tf];
           try {
-            versions[tf] = validateShortCandles(tf, bars);
+            const source = validateShortCandles(tf, bars);
+            contextWindows[tf] = bars;
+            if (source <= Number(done.get(pair)?.[tf] ?? 0)) continue;
+            versions[tf] = source;
             windows[tf] = bars;
           } catch (error) {
             unavailable.push({ pair, timeframe: tf, reason: errorMessage(error) });
           }
         }
         if (!Object.keys(windows).length) return { pair, ok: true, skipped: true, timeframes: [] };
-        const analysis = await computeShortTimeframeSnapshot(pair, windows, bundle.higher_indicators ?? {});
+        const analysis = await computeShortTimeframeSnapshot(pair, windows, bundle.higher_indicators ?? {}, contextWindows);
         if (dryRun) return { pair, ok: true, skipped: false, timeframes: Object.keys(windows) };
         const { data: published, error: writeError } = await db.rpc('publish_short_timeframe_analysis', {
           p_pair: pair, p_sources: versions, p_analysis: analysis,

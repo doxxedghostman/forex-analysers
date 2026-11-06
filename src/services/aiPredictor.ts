@@ -7,7 +7,15 @@ import {
   isKillzoneActive,
   detectStructure,
   detectLiquidity,
+  type StructureResult,
+  type LiquidityZone,
 } from "./smcAnalysis";
+
+export interface ClosedStructureContext {
+  candles: Candle[];
+  structure: StructureResult;
+  liquidity: LiquidityZone[];
+}
 
 // ============================================================================
 // Types
@@ -548,7 +556,8 @@ export async function getSmcContext(
   symbol: string,
   _interval: string,
   candles: Candle[],
-  allData?: Record<string, Candle[]>
+  allData?: Record<string, Candle[]>,
+  precomputed?: ClosedStructureContext
 ): Promise<SmcContext> {
   const out: SmcContext = {
     pd_bias: "Neutral",
@@ -581,12 +590,12 @@ export async function getSmcContext(
     out.killzone_label = kz.label;
 
     // 3) Structure
-    const { bos, choch } = detectStructure(candles);
+    const { bos, choch } = precomputed?.structure ?? detectStructure(candles);
     out.bos_count = bos.length;
     out.choch_count = choch.length;
 
     // 4) Liquidity + recent sweep detection
-    const liqZones = detectLiquidity(candles);
+    const liqZones = precomputed?.liquidity ?? detectLiquidity(candles);
     const recentCandles = isXau(symbol) ? 6 : 8;
     const start = Math.max(0, candles.length - recentCandles);
 
@@ -1082,7 +1091,8 @@ export async function predictTrade(
   ohlcIn: Candle[] | Record<string, Candle[]>,
   symbol: string,
   intervalIn: string,
-  options: { skipAi?: boolean; livePrice?: number; indicatorCache?: Record<string, any>; candlesClosed?: boolean } = {}
+  options: { skipAi?: boolean; livePrice?: number; indicatorCache?: Record<string, any>; candlesClosed?: boolean;
+    structureCache?: Record<string, ClosedStructureContext> } = {}
 ): Promise<PredictionResult> {
   const trendFromCloses = (closes: number[]): Direction => {
     if (closes.length < 6) return "Neutral";
@@ -1166,7 +1176,8 @@ export async function predictTrade(
     };
   }
 
-  const ohlcClosed = options.candlesClosed ? candles : candles.length > 1 ? candles.slice(0, -1) : candles;
+  const precomputed = options.structureCache?.[interval];
+  const ohlcClosed = precomputed?.candles ?? (options.candlesClosed ? candles : candles.length > 1 ? candles.slice(0, -1) : candles);
 
   let context: MarketContext;
   try {
@@ -1178,7 +1189,7 @@ export async function predictTrade(
 
   let smcContext: SmcContext;
   try {
-    smcContext = await getSmcContext(symbol, interval, ohlcClosed, allData);
+    smcContext = await getSmcContext(symbol, interval, ohlcClosed, allData, precomputed);
   } catch (e) {
     console.error("❌ SMC context failed:", e);
     smcContext = {

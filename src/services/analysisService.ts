@@ -1,19 +1,24 @@
 import { getSupabaseAdmin } from "../lib/supabaseAdmin";
 import { computeSnapshot } from "./analysisEngine";
-import { validateAnalysisInput, type AnalysisInput } from "./analysisInputs";
+import { validateAnalysisInput, validateAnalysisInputMetadata, type AnalysisInput } from "./analysisInputs";
 import { TIER_CONFIG, type Tier } from "./snapshotConfig";
 import { runPendingShortAnalysis } from './shortTimeframeAnalysis';
-export async function analysePair(pair: string, tier: Tier, dryRun = true) {
+export async function analysePair(pair: string, tier: Tier, dryRun = true, knownAnalysisInputAt?: string | null) {
   const supabase = getSupabaseAdmin();
   try {
     const { data, error } = await supabase.from("market_analysis_inputs")
       .select("pair,tier,candles,fetched_at").eq("pair", pair).maybeSingle();
     if (error) throw error;
     const input = data as AnalysisInput | null;
-    const { data: previous, error: previousError } = await supabase.from("market_snapshots")
-      .select("analysis_input_at").eq("pair", pair).maybeSingle();
-    if (previousError) throw previousError;
-    if (previous?.analysis_input_at && Date.parse(previous.analysis_input_at) >= Date.parse(input!.fetched_at))
+    validateAnalysisInputMetadata(input, pair, tier);
+    let previousAt = knownAnalysisInputAt;
+    if (previousAt === undefined) {
+      const { data: previous, error: previousError } = await supabase.from("market_snapshots")
+        .select("analysis_input_at").eq("pair", pair).maybeSingle();
+      if (previousError) throw previousError;
+      previousAt = previous?.analysis_input_at;
+    }
+    if (previousAt && input && Date.parse(previousAt) >= Date.parse(input.fetched_at))
       return { pair, ok: true, skipped: true, reason: "Input already analysed" };
     const windows = validateAnalysisInput(input, pair, tier);
     const start = process.cpuUsage(); const wall = performance.now();
@@ -61,7 +66,8 @@ export async function recoverPendingAnalysis(excludedTier: Tier, maxPairs = 2, n
   }).sort((a, b) => Date.parse(a.fetched_at) - Date.parse(b.fetched_at));
   const recovered = [];
   for (const input of pending.slice(0, Math.max(0, Math.min(2, maxPairs)))) {
-    const outcome = await analysePair(input.pair, input.tier as Tier, false);
+    const previous = completed.get(String(input.pair));
+    const outcome = await analysePair(input.pair, input.tier as Tier, false, previous ? new Date(previous).toISOString() : null);
     recovered.push(outcome);
   }
   return recovered;
@@ -97,7 +103,7 @@ export async function runAllPendingAnalysis(dryRun = true) {
   const db = getSupabaseAdmin();
   const [inputs, snapshots] = await Promise.all([
     db.from('market_analysis_inputs').select('pair,tier,fetched_at'),
-    db.from('market_snapshots').select('pair,analysis_input_at'),
+    db.from('market_snapshots').select('pair,analysis_input_at,short_analysis_sources'),
   ]);
   if (inputs.error || snapshots.error) throw new Error(`Failed to load pending analysis: ${inputs.error?.message || snapshots.error?.message}`);
   const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
@@ -109,10 +115,13 @@ export async function runAllPendingAnalysis(dryRun = true) {
   const results: Awaited<ReturnType<typeof analysePair>>[] = [];
   // Bound in-flight analysis while avoiding an unbounded Promise.all burst.
   for (let i = 0; i < pending.length; i += 3) {
-    const group = await Promise.all(pending.slice(i, i + 3).map(row => analysePair(row.pair, row.tier as Tier, dryRun)));
+    const group = await Promise.all(pending.slice(i, i + 3).map(row => {
+      const previous = completed.get(String(row.pair));
+      return analysePair(row.pair, row.tier as Tier, dryRun, previous ? new Date(previous).toISOString() : null);
+    }));
     results.push(...group);
   }
-  const shortTimeframes = await runPendingShortAnalysis(dryRun);
+  const shortTimeframes = await runPendingShortAnalysis(dryRun, undefined, snapshots.data ?? []);
   return { all: true, dryRun, total: pending.length, succeeded: results.filter(x => x.ok).length,
     failed: [...results.filter(x => !x.ok), ...shortTimeframes.failed], results, shortTimeframes };
 }

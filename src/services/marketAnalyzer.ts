@@ -598,8 +598,10 @@ export function calculateAdxDi(ohlc: Candle[], period = 14): { adx: number | nul
     }
 
     const tr14 = rollingSum(trList, period);
-    const plusDi14 = tr14.map((t, i) => 100 * (rollingSum(plusDm, period)[i] / t));
-    const minusDi14 = tr14.map((t, i) => 100 * (rollingSum(minusDm, period)[i] / t));
+    const plusDm14 = rollingSum(plusDm, period);
+    const minusDm14 = rollingSum(minusDm, period);
+    const plusDi14 = tr14.map((t, i) => 100 * (plusDm14[i] / t));
+    const minusDi14 = tr14.map((t, i) => 100 * (minusDm14[i] / t));
 
     const dx = plusDi14.map((p, i) => {
         const m = minusDi14[i];
@@ -743,3 +745,4 @@ export function computeIndicators(ohlcData: Candle[] | any[]): Partial<Indicator
 
     return indicators;
 }
+
