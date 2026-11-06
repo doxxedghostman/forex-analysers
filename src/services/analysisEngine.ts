@@ -85,7 +85,7 @@ function computeWeeklyTrend(dailyCandles: Candle[]) {
  * anchor interval).
  */
 function analyzeTimeframeStructureAndPatterns(
-  candles: Candle[]
+  candles: Candle[], closedOnly = false
 ): { structure: MarketStructure; patterns: PatternSet } {
   const emptyStructure: MarketStructure = {
     bos: { detected: false, confidence: 0 },
@@ -105,7 +105,7 @@ function analyzeTimeframeStructureAndPatterns(
   const structure = summarizeMarketStructure(candles, rawStructure, liquidity);
 
   // The saved bundle includes a forming candle; pattern validation uses closed bars only.
-  const patternCandles = candles.slice(0, -1);
+  const patternCandles = closedOnly ? candles : candles.slice(0, -1);
   const patternStructure = detectStructure(patternCandles);
   const analysisSwings = toAnalysisSwingPoints(patternCandles, patternStructure.swings);
   const { highs, lows } = splitSwings(analysisSwings);
@@ -210,4 +210,34 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
         updated_at: new Date().toISOString(),
       };
 }
+
+/** Closed Deriv bars have their own cadence and never overwrite the 4H
+ * recommendation, live quote, or longer-timeframe publication version. */
+export async function computeShortTimeframeSnapshot(
+  pair: string, candlesByTf: Record<string, Candle[]>,
+  higherIndicators: Record<string, any> = {},
+) {
+  const multiTf: Record<string, any> = {};
+  const structure: Record<string, MarketStructure> = {};
+  const patterns: Record<string, PatternSet> = {};
+  const setups: Record<string, PredictionResult> = {};
+  const indicatorCache: Record<string, any> = { ...higherIndicators };
+  const frames = ['1m', '5m'].filter(tf => candlesByTf[tf]?.length);
+  for (const tf of frames) {
+    const candles = candlesByTf[tf];
+    const indicators = computeIndicators(candles);
+    indicatorCache[tf] = indicators;
+    multiTf[tf] = { indicators, lastClose: candles.at(-1)!.close, patternVersion: CHART_PATTERN_VERSION };
+    const found = analyzeTimeframeStructureAndPatterns(candles, true);
+    structure[tf] = found.structure;
+    patterns[tf] = found.patterns;
+  }
+  for (const tf of frames) {
+    setups[tf] = await predictTrade(candlesByTf, pair, tf, {
+      skipAi: true, indicatorCache, candlesClosed: true,
+    });
+  }
+  return { multi_tf: multiTf, structure_by_tf: structure, patterns_by_tf: patterns, setups };
+}
+
 

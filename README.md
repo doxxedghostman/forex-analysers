@@ -70,3 +70,31 @@ Pause collector snapshot/sentiment timers and allow requests to finish, redeploy
 
 `npm ci`, `npm test`, `npm run build`.
 Tests compare the analysis engine to the frozen old implementation, reject malformed/stale input, preserve quote ownership, check version publication and verify all ten new crosses without external candle requests. `[analysis-cpu]` is process-wide diagnostic timing, not exact per-request billing. Source mappings are direct Yahoo PAIR=X; four-hour bars remain resampled from Yahoo hourly bars. Live development probes hit HTTP 429, so deployed collector logs are still needed to verify real provider timestamps and history completeness. Native charts retain the existing daily-FX repair behavior; separately labelled TradingView reference widgets are not the native data source.
+
+# Deriv 1m and 5m analysis
+
+Apply `supabase/migrations/20261106020115_short_timeframe_analysis.sql` before
+deploying this version. Existing environment variables remain unchanged.
+The existing five-minute `GET /api/cron/analyse?all=1` schedule now also analyses
+fresh, closed 1m/5m candles saved by the Deriv listener, independently of longer
+input versions. No new cron jobs or Yahoo requests are added.
+
+Each short frame gets indicators (including EMA200), structure, chart patterns
+and its own deterministic setup in `market_snapshots.multi_tf`,
+`structure_by_tf`, `patterns_by_tf` and `setups`. Short results carry their Deriv
+source timestamp and analysis timestamp. An independent source-version marker
+prevents duplicate work and older results replacing newer results. Longer-frame
+publishes preserve the short entries; short publishes do not change the 4H
+recommendation, live quote, longer-frame timestamps or weekly trend.
+
+Only the latest 250 saved bars are read per available frame. Require at least
+200 valid, ordered closed bars; stale or unsupported frames are reported in
+`shortTimeframes.unavailable` without blocking other frames. Deriv currently
+covers 20 instruments; CADJPY, CHFJPY and CPPER have no saved Deriv short bars.
+Cached recent higher-frame indicator context is passed into short setups when
+available, without downloading the complete longer candle histories again.
+
+Logs: `[short-analysis-pending]`, `[short-analysis-published]`,
+`[short-analysis-failed]`. Shadow mode computes without publishing. The route's
+`shortTimeframes` result lists publications, skipped work and unavailable data.
+

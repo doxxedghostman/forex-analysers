@@ -61,7 +61,7 @@ export interface TimeframeAnalysis {
   patterns: PatternSet;
 }
 
-export type TimeframeKey = "15m" | "1H" | "4H" | "1D";
+export type TimeframeKey = "1m" | "5m" | "15m" | "1H" | "4H" | "1D";
 
 export interface PairAnalysis {
   pair: string;
@@ -82,3 +82,4 @@ export interface SwingPoint {
  * imported by both marketAnalyzer.ts and chartPatterns.ts so every
  * detector function applies the same cutoff. */
 export const CONFIDENCE_THRESHOLD = 50;
+

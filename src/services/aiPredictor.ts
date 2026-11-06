@@ -535,6 +535,8 @@ export function normalizeTradePlan(
 
 function normalizeTf(tf: string): string {
   const s = String(tf || "").trim().toLowerCase();
+  if (["1m", "1min", "m1", "1"].includes(s)) return "1m";
+  if (["5m", "5min", "m5", "5"].includes(s)) return "5m";
   if (["15m", "15min", "m15", "15"].includes(s)) return "15m";
   if (["1h", "60m", "h1", "60"].includes(s)) return "1h";
   if (["4h", "240m", "h4", "240"].includes(s)) return "4h";
@@ -769,7 +771,9 @@ export async function prepareMarketContext(
 
   // Multi-timeframe alignment
   const intervalNorm = normalizeTf(interval);
-  const tfs = Array.from(new Set([intervalNorm, "15m", "1h", "4h", "1d"].filter(Boolean)));
+  const tfs = Array.from(new Set([intervalNorm, "15m", "1h", "4h", "1d",
+    ...["1m", "5m"].filter(tf => allData?.[tf]?.length),
+  ].filter(Boolean)));
   const multiTf: Record<string, Record<string, any>> = {};
 
   // Normalize allData's keys once so lookups below match regardless of how
@@ -953,7 +957,7 @@ export function buildDetailedPromptRoles(
   const interval = context.interval || "N/A";
 
   const mtfLines: string[] = [];
-  for (const tfKey of ["15m", "1h", "4h", "1d"]) {
+  for (const tfKey of ["1m", "5m", "15m", "1h", "4h", "1d"]) {
     const tfData = context.multi_tf?.[tfKey];
     if (tfData && Object.keys(tfData).length) {
       const tRsi = Math.round(sf(tfData.rsi ?? tfData.rsi_14, 50) * 100) / 100;
@@ -1078,7 +1082,7 @@ export async function predictTrade(
   ohlcIn: Candle[] | Record<string, Candle[]>,
   symbol: string,
   intervalIn: string,
-  options: { skipAi?: boolean; livePrice?: number; indicatorCache?: Record<string, any> } = {}
+  options: { skipAi?: boolean; livePrice?: number; indicatorCache?: Record<string, any>; candlesClosed?: boolean } = {}
 ): Promise<PredictionResult> {
   const trendFromCloses = (closes: number[]): Direction => {
     if (closes.length < 6) return "Neutral";
@@ -1109,7 +1113,7 @@ export async function predictTrade(
     interval = normalizeTf(anchorTf);
   }
 
-  const validIntervals = new Set(["15m", "1h", "4h", "1d"]);
+  const validIntervals = new Set(["1m", "5m", "15m", "1h", "4h", "1d"]);
   if (!validIntervals.has(interval)) {
     return {
       direction: "Neutral",
@@ -1120,7 +1124,7 @@ export async function predictTrade(
       preferred: "None",
       long_setup: {},
       short_setup: {},
-      reasoning: `Invalid interval: ${interval}. Use one of 15m, 1h, 4h, 1d`,
+      reasoning: `Invalid interval: ${interval}. Use one of 1m, 5m, 15m, 1h, 4h, 1d`,
       notes: "",
       ai_raw: {},
     };
@@ -1162,7 +1166,7 @@ export async function predictTrade(
     };
   }
 
-  const ohlcClosed = candles.length > 1 ? candles.slice(0, -1) : candles;
+  const ohlcClosed = options.candlesClosed ? candles : candles.length > 1 ? candles.slice(0, -1) : candles;
 
   let context: MarketContext;
   try {
@@ -1439,3 +1443,4 @@ export async function predictTrade(
     ai_raw: aiRawResponse,
   };
 }
+

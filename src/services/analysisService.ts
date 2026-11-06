@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from "../lib/supabaseAdmin";
 import { computeSnapshot } from "./analysisEngine";
 import { validateAnalysisInput, type AnalysisInput } from "./analysisInputs";
 import { TIER_CONFIG, type Tier } from "./snapshotConfig";
+import { runPendingShortAnalysis } from './shortTimeframeAnalysis';
 export async function analysePair(pair: string, tier: Tier, dryRun = true) {
   const supabase = getSupabaseAdmin();
   try {
@@ -85,8 +86,9 @@ export async function runAnalysisBatch(tier: Tier, dryRun = true) {
       console.warn('[analysis-recovery-failed]', { tier, error: String(error?.message || error) });
     }
   }
+  const shortTimeframes = await runPendingShortAnalysis(dryRun, tier);
   return { tier, dryRun, total: results.length, succeeded: results.filter(r => r.ok).length,
-    failed: results.filter(r => !r.ok), results, recovery };
+    failed: [...results.filter(r => !r.ok), ...shortTimeframes.failed], results, recovery, shortTimeframes };
 }
 
 /** Independent five-minute analyser. Only pending input versions are read, and
@@ -110,6 +112,8 @@ export async function runAllPendingAnalysis(dryRun = true) {
     const group = await Promise.all(pending.slice(i, i + 3).map(row => analysePair(row.pair, row.tier as Tier, dryRun)));
     results.push(...group);
   }
+  const shortTimeframes = await runPendingShortAnalysis(dryRun);
   return { all: true, dryRun, total: pending.length, succeeded: results.filter(x => x.ok).length,
-    failed: results.filter(x => !x.ok), results };
+    failed: [...results.filter(x => !x.ok), ...shortTimeframes.failed], results, shortTimeframes };
 }
+
