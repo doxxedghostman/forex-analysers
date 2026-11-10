@@ -52,18 +52,20 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
   }finally{global.fetch=originalFetch;global.setTimeout=realTimeout;}
  });
 }
-test('shadow run never publishes; active run excludes live prices and uses input version',async()=>{
- const row=input();let publishes=[];const db=fakeDb(q=>({data:q.table==='market_analysis_inputs'?row:{analysis_input_at:null},error:null}));
+test('D1-backed analysis shadow run never publishes; active run publishes only analysis fields with the D1 source version',async()=>{
+ const row=input();let publishes=[];const db=fakeDb(()=>({data:{analysis_input_at:null},error:null}));
  db.rpc=async(name,args)=>{publishes.push({name,args});return {data:true,error:null};};
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db}})(path.join(root,'src/services/analysisService.ts'));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInput:async()=>row}})(path.join(root,'src/services/analysisService.ts'));
  assert.equal((await service.analysePair('EURUSD','core')).dryRun,true);assert.equal(publishes.length,0);
  assert.equal((await service.analysePair('EURUSD','core',false)).published,true);
+ assert.equal(publishes[0].name,'publish_market_analysis_from_d1');
  assert.equal(publishes[0].args.p_input_at,row.fetched_at);
+ assert.equal(publishes[0].args.p_source_candle_epoch,row.candles['15m'].at(-1).timestamp);
  for(const key of ['live_price','price_updated_at','price_source','updated_at'])assert.equal(key in publishes[0].args.p_analysis,false);
 });
-test('already analysed and stale inputs do not calculate or publish',async()=>{
- let row=input();let computed=0;const db=fakeDb(q=>({data:q.table==='market_analysis_inputs'?row:{analysis_input_at:row.fetched_at},error:null}));
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{computeSnapshot:async()=>{computed++;throw Error('should not compute');}}})(path.join(root,'src/services/analysisService.ts'));
+test('already analysed and stale D1 inputs do not calculate or publish',async()=>{
+ let row=input();let computed=0;const db=fakeDb(()=>({data:{analysis_input_at:row.fetched_at},error:null}));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInput:async()=>row},'./analysisEngine':{computeSnapshot:async()=>{computed++;throw Error('should not compute');}}})(path.join(root,'src/services/analysisService.ts'));
  assert.equal((await service.analysePair('EURUSD','core',false)).skipped,true);
  row={...row,fetched_at:'2020-01-01T00:00:00Z'};assert.equal((await service.analysePair('EURUSD','core',false)).ok,false);assert.equal(computed,0);
 });
