@@ -1,5 +1,6 @@
 import type { Candle } from "./candleTypes";
 import { computeIndicators, type IndicatorReport } from "./marketAnalyzer";
+import { createCandleCalculationCache } from "./candleCalculationCache";
 
 export type HigherTimeframe = "1w" | "1mo";
 export type HigherTimeframeCandle = Candle & {
@@ -107,32 +108,38 @@ export function aggregateDailyCandles(
 /**
  * Indicators are deliberately withheld until 35 completed higher-timeframe
  * candles exist. OHLC/direction context remains available before that point.
+ * Cache keys include the pair at the call site; fingerprints include every
+ * completed OHLCV bar, so historical corrections invalidate the summary.
  */
+const summaryCache = createCandleCalculationCache<DerivedHigherTimeframeSummary>(64);
+
 export function summarizeHigherTimeframe(
   daily: readonly Candle[],
   timeframe: HigherTimeframe,
   now = Date.now(),
+  cacheKey = "default",
 ): DerivedHigherTimeframeSummary | null {
   const closed = aggregateDailyCandles(daily, timeframe, now)
     .filter(candle => candle.complete);
   const last = closed.at(-1);
   if (!last) return null;
 
-  const recent = closed.slice(-8);
-  const enough = closed.length >= 35;
-  const fullIndicators = enough ? computeIndicators(closed) : null;
-  const indicators: Partial<IndicatorReport> = fullIndicators ? {
-    rsi: fullIndicators.rsi,
-    ema_20: fullIndicators.ema_20,
-    macd: fullIndicators.macd,
-    macd_signal: fullIndicators.macd_signal,
-    macd_trend: fullIndicators.macd_trend,
-    atr: fullIndicators.atr,
-    support_levels_all: fullIndicators.support_levels_all,
-    resistance_levels_all: fullIndicators.resistance_levels_all,
-  } : {};
+  return summaryCache(`${cacheKey}:${timeframe}`, closed, () => {
+    const recent = closed.slice(-8);
+    const enough = closed.length >= 35;
+    const fullIndicators = enough ? computeIndicators(closed) : null;
+    const indicators: Partial<IndicatorReport> = fullIndicators ? {
+      rsi: fullIndicators.rsi,
+      ema_20: fullIndicators.ema_20,
+      macd: fullIndicators.macd,
+      macd_signal: fullIndicators.macd_signal,
+      macd_trend: fullIndicators.macd_trend,
+      atr: fullIndicators.atr,
+      support_levels_all: fullIndicators.support_levels_all,
+      resistance_levels_all: fullIndicators.resistance_levels_all,
+    } : {};
 
-  return {
+    return {
     timeframe,
     derivedFrom: "1d",
     closedCandles: closed.length,
@@ -156,7 +163,8 @@ export function summarizeHigherTimeframe(
     note: enough
       ? "Closed higher-timeframe candles only. Support/resistance are observed range candidates, not confirmed trade levels."
       : "Insufficient completed higher-timeframe history for reliable momentum indicators. No RSI, EMA, MACD or ATR is inferred.",
-  };
+    };
+  });
 }
 
 /** Calendar-week compatibility summary for the existing weekly_trend field. */
