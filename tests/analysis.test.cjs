@@ -1,7 +1,8 @@
-const {test}=require('node:test');const assert=require('node:assert/strict');const path=require('node:path');
+const {test}=require('node:test');const assert=require('node:assert/strict');const path=require('node:path');const fs=require('node:fs');
 const {loader,fixture,fakeDb,root}=require('./helpers.cjs');
 const input=(candles=fixture())=>({pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString(),candles});
 const validation=loader()(path.join(root,'src/services/analysisInputs.ts'));
+const legacyCronAvailable=fs.existsSync(path.resolve(root,'../forex-cron/src/lib/candleCacheMerge.ts'));
 test('input validation rejects missing, stale, future, malformed and partial bundles',()=>{
  const good=input();assert.equal(validation.validateAnalysisInput(good,'EURUSD','core')['1h'].length,250);
  for(const bad of [null,{...good,tier:'extended_c'},{...good,fetched_at:'invalid'},
@@ -17,7 +18,7 @@ test('provider staleness is detected on a weekday despite a new fetch timestamp'
  assert.throws(()=>validation.validateAnalysisInput(good,'EURUSD','core',now),/Provider candles are stale/);
 });
 for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPPER','extended_c',4.5],['PLTUM','extended_c',1000]]){
- test('saved-input analysis preserves legacy non-pattern output for '+pair,async()=>{
+ test('saved-input analysis preserves legacy non-pattern output for '+pair,{skip:!legacyCronAvailable},async()=>{
   const candles=fixture(base);let oldSnapshot;let networkCalls=0;
   const db=fakeDb(q=>{
    if(q.table==='market_snapshots'&&q.operation==='upsert')oldSnapshot=q.payload;
