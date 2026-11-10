@@ -3,13 +3,13 @@ import { computeSnapshot } from "./analysisEngine";
 import { validateAnalysisInput, validateAnalysisInputMetadata, type AnalysisInput } from "./analysisInputs";
 import { TIER_CONFIG, type Tier } from "./snapshotConfig";
 import { runPendingShortAnalysis } from './shortTimeframeAnalysis';
-import { getD1AnalysisInput, getD1AnalysisInputMetadata, getD1AnalysisInputVersion } from './d1MarketData';
-export async function analysePair(pair: string, tier: Tier, dryRun = true, knownAnalysisInputAt?: string | null, knownInput?: AnalysisInput | null) {
+export async function analysePair(pair: string, tier: Tier, dryRun = true, knownAnalysisInputAt?: string | null) {
   const supabase = getSupabaseAdmin();
   try {
-    // Candle bundles are owned by Cloudflare D1. Supabase remains the output
-    // store for snapshots and the atomic, version-checked publication RPC.
-    const input = knownInput === undefined ? await getD1AnalysisInput(pair) : knownInput;
+    const { data, error } = await supabase.from("market_analysis_inputs")
+      .select("pair,tier,candles,fetched_at").eq("pair", pair).maybeSingle();
+    if (error) throw error;
+    const input = data as AnalysisInput | null;
     validateAnalysisInputMetadata(input, pair, tier);
     let previousAt = knownAnalysisInputAt;
     if (previousAt === undefined) {
@@ -30,16 +30,8 @@ export async function analysePair(pair: string, tier: Tier, dryRun = true, known
     const { live_price, updated_at, ...analysis } = snapshot;
     if (dryRun) return { pair, ok: true, dryRun: true, inputAt: input!.fetched_at,
       direction: analysis.direction, confidence: analysis.confidence_score };
-    // Recheck the D1 fetch version after calculation. If collection advanced
-    // while analysis was running, discard this result rather than publish stale work.
-    const latestInput = await getD1AnalysisInputVersion(pair);
-    if (latestInput.tier !== tier || latestInput.fetchedAt !== input!.fetched_at)
-      return { pair, ok: true, skipped: true, reason: "D1 input superseded before publish" };
-    const sourceCandleAt = input!.candles["15m"]?.at(-1)?.timestamp;
-    if (!Number.isFinite(sourceCandleAt) || Number(sourceCandleAt) <= 0)
-      throw new Error("Missing valid 15m source candle timestamp for publication");
-    const { data: published, error: publishError } = await supabase.rpc("publish_market_analysis_from_d1", {
-      p_pair: pair, p_input_at: input!.fetched_at, p_source_candle_epoch: sourceCandleAt, p_analysis: analysis,
+    const { data: published, error: publishError } = await supabase.rpc("publish_market_analysis", {
+      p_pair: pair, p_input_at: input!.fetched_at, p_analysis: analysis,
     });
     if (publishError) throw publishError;
     return { pair, ok: true, published: published === true, skipped: published !== true, inputAt: input!.fetched_at };
@@ -55,25 +47,32 @@ export async function analysePair(pair: string, tier: Tier, dryRun = true, known
 export async function recoverPendingAnalysis(excludedTier: Tier, maxPairs = 2, now = Date.now()) {
   const db = getSupabaseAdmin();
   const [inputs, snapshots] = await Promise.all([
-    getD1AnalysisInputMetadata(),
+    db.from('market_analysis_inputs').select('pair,tier,fetched_at'),
     db.from('market_snapshots').select('pair,analysis_input_at'),
   ]);
-  if (snapshots.error) throw new Error('Could not read analysed input versions: ' + snapshots.error.message);
-  const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
-  const pending = inputs.filter(row => {
+  if (inputs.error) throw new Error(`Could not read pending analysis inputs: ${inputs.error.message}`);
+  if (snapshots.error) throw new Error(`Could not read analysed input versions: ${snapshots.error.message}`);
+  const completed = new Map((snapshots.data ?? []).map(row =>
+    [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]
+  ));
+  const pending = (inputs.data ?? []).filter(row => {
     const planned = row.tier as Tier;
     if (!Object.hasOwn(TIER_CONFIG, planned) || planned === excludedTier) return false;
     const fetchedAt = Date.parse(row.fetched_at);
     const allowedAgeMs = TIER_CONFIG[planned].refreshMinutes * 2.5 * 60_000;
-    return Number.isFinite(fetchedAt) && fetchedAt <= now + 60_000 && now - fetchedAt <= allowedAgeMs && fetchedAt > (completed.get(String(row.pair)) ?? 0);
+    return Number.isFinite(fetchedAt) && fetchedAt <= now + 60_000
+      && now - fetchedAt <= allowedAgeMs
+      && fetchedAt > (completed.get(String(row.pair)) ?? 0);
   }).sort((a, b) => Date.parse(a.fetched_at) - Date.parse(b.fetched_at));
   const recovered = [];
   for (const input of pending.slice(0, Math.max(0, Math.min(2, maxPairs)))) {
     const previous = completed.get(String(input.pair));
-    recovered.push(await analysePair(input.pair, input.tier as Tier, false, previous ? new Date(previous).toISOString() : null));
+    const outcome = await analysePair(input.pair, input.tier as Tier, false, previous ? new Date(previous).toISOString() : null);
+    recovered.push(outcome);
   }
   return recovered;
 }
+
 export async function runAnalysisBatch(tier: Tier, dryRun = true) {
   const startedAt = Date.now();
   const results = [];
@@ -103,20 +102,22 @@ export async function runAnalysisBatch(tier: Tier, dryRun = true) {
 export async function runAllPendingAnalysis(dryRun = true) {
   const db = getSupabaseAdmin();
   const [inputs, snapshots] = await Promise.all([
-    getD1AnalysisInputMetadata(),
-    db.from('market_snapshots').select('pair,analysis_input_at,short_analysis_sources,multi_tf'),
+    db.from('market_analysis_inputs').select('pair,tier,fetched_at'),
+    db.from('market_snapshots').select('pair,analysis_input_at,short_analysis_sources'),
   ]);
-  if (snapshots.error) throw new Error('Failed to load analysed input versions: ' + snapshots.error.message);
+  if (inputs.error || snapshots.error) throw new Error(`Failed to load pending analysis: ${inputs.error?.message || snapshots.error?.message}`);
   const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
-  const pending = inputs.filter(row => Object.hasOwn(TIER_CONFIG, row.tier) && Number.isFinite(Date.parse(row.fetched_at))
-    && Date.parse(row.fetched_at) > (completed.get(String(row.pair)) ?? 0))
-    .sort((a, b) => Date.parse(a.fetched_at) - Date.parse(b.fetched_at));
+  const pending = (inputs.data ?? []).filter(row =>
+    Object.hasOwn(TIER_CONFIG, row.tier) && Number.isFinite(Date.parse(row.fetched_at))
+    && Date.parse(row.fetched_at) > (completed.get(String(row.pair)) ?? 0)
+  ).sort((a,b) => Date.parse(a.fetched_at) - Date.parse(b.fetched_at));
   console.info('[analysis-pending]', { count: pending.length, dryRun });
   const results: Awaited<ReturnType<typeof analysePair>>[] = [];
+  // Bound in-flight analysis while avoiding an unbounded Promise.all burst.
   for (let i = 0; i < pending.length; i += 3) {
-    const group = await Promise.all(pending.slice(i, i + 3).map(input => {
-      const previous = completed.get(String(input.pair));
-      return analysePair(input.pair, input.tier as Tier, dryRun, previous ? new Date(previous).toISOString() : null);
+    const group = await Promise.all(pending.slice(i, i + 3).map(row => {
+      const previous = completed.get(String(row.pair));
+      return analysePair(row.pair, row.tier as Tier, dryRun, previous ? new Date(previous).toISOString() : null);
     }));
     results.push(...group);
   }
@@ -124,3 +125,4 @@ export async function runAllPendingAnalysis(dryRun = true) {
   return { all: true, dryRun, total: pending.length, succeeded: results.filter(x => x.ok).length,
     failed: [...results.filter(x => !x.ok), ...shortTimeframes.failed], results, shortTimeframes };
 }
+

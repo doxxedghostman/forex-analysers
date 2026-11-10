@@ -76,15 +76,12 @@ test('short-only calculation preserves unchanged-frame alignment and recomputes 
  const cold=await loader()(service('analysisEngine')).computeShortTimeframeSnapshot('EURUSD',windows,newHigher);
  assert.deepEqual(warm,cold);
 });
-test('short service reads D1 windows and skips a published 5m frame while retaining its context for a new 1m source',async()=>{
+test('short service skips published 5m work while retaining its context for a new 1m source',async()=>{
  const windows=closedWindows(),calls=[],computed=[];
  const markers={'5m':windows['5m'].at(-1).timestamp};
- const db=fakeDb(q=>({data:q.table==='market_snapshots'?[{pair:'EURUSD',short_analysis_sources:markers,multi_tf:{}}]:[],error:null}));
- db.rpc=async(name,args)=>{calls.push({name,args});return {data:true,error:null};};
- const analysis=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
-  getD1CandleBundle:async(pair,tf)=>({pair,timeframe:tf,candles:pair==='EURUSD'?windows[tf]:[],fetchedAt:new Date().toISOString(),sourceCandleAt:null,candleCount:windows[tf]?.length??0}),
-  mapWithConcurrency:async(values,_limit,task)=>Promise.all(values.map(task)),
- },'./analysisEngine':{computeShortTimeframeSnapshot:async(...args)=>{computed.push(args);return {};}}})(service('shortTimeframeAnalysis'));
+ const db=fakeDb(q=>({data:q.table==='market_candle_cache'?['1m','5m'].map(tf=>({pair:'EURUSD',timeframe:tf,source_candle_at:new Date(windows[tf].at(-1).timestamp*1000).toISOString()})):[{pair:'EURUSD',short_analysis_sources:markers}],error:null}));
+ db.rpc=async(name,args)=>{calls.push({name,args});return {data:name==='get_short_analysis_bundle'?{candles:windows,higher_indicators:{}}:true,error:null};};
+ const analysis=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{computeShortTimeframeSnapshot:async(...args)=>{computed.push(args);return {};}}})(service('shortTimeframeAnalysis'));
  const result=await analysis.runPendingShortAnalysis(false);
  assert.equal(result.failed.length,0);assert.deepEqual(Object.keys(computed[0][1]),['1m']);
  assert.deepEqual(Object.keys(computed[0][3]),['1m','5m']);
@@ -92,15 +89,12 @@ test('short service reads D1 windows and skips a published 5m frame while retain
 });
 test('pending batch reuses publication markers and leaves the final database version check in place',async()=>{
  const row={pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString(),candles:fixture()},reads=[],writes=[],short=[];
- const db=fakeDb(q=>{reads.push(q);return {data:[],error:null};});
+ const db=fakeDb(q=>{reads.push(q);return {data:q.table==='market_analysis_inputs'?(q.filters.length?row:[row]):[],error:null};});
  db.rpc=async(name,args)=>{writes.push({name,args});return {data:false,error:null};};
- const analysis=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
-  getD1AnalysisInputMetadata:async()=>[{pair:'EURUSD',tier:'core',fetched_at:row.fetched_at}],
-  getD1AnalysisInput:async()=>row,getD1AnalysisInputVersion:async()=>({pair:'EURUSD',tier:'core',fetchedAt:row.fetched_at}),
- },'./analysisEngine':{computeSnapshot:async()=>({tier:'core'})},'./shortTimeframeAnalysis':{runPendingShortAnalysis:async(...args)=>{short.push(args);return {failed:[]};}}})(service('analysisService'));
+ const analysis=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{computeSnapshot:async()=>({tier:'core'})},'./shortTimeframeAnalysis':{runPendingShortAnalysis:async(...args)=>{short.push(args);return {failed:[]};}}})(service('analysisService'));
  const result=await analysis.runAllPendingAnalysis(false);
  assert.equal(result.failed.length,0);assert.equal(result.results[0].skipped,true);
  assert.equal(reads.filter(q=>q.table==='market_snapshots').length,1);
- assert.deepEqual(short[0][2],[]);assert.equal(writes[0].name,'publish_market_analysis_from_d1');
+ assert.deepEqual(short[0][2],[]);assert.equal(writes[0].name,'publish_market_analysis');
  assert.equal(writes[0].args.p_input_at,row.fetched_at);
 });
