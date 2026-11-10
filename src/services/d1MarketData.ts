@@ -63,6 +63,13 @@ export async function getD1AnalysisInput(pair: string): Promise<AnalysisInput | 
   };
 }
 
+
+export type D1AnalysisInputMetadata = { pair: string; tier: string; fetched_at: string };
+export async function getD1AnalysisInputMetadata(): Promise<D1AnalysisInputMetadata[]> {
+  const result = await d1Get<{ inputs: Array<{ pair: string; tier: string; fetched_at: string }> }>('/internal/v1/analysis-inputs');
+  if (!Array.isArray(result.inputs)) throw new Error('D1 analysis-input index returned an invalid response');
+  return result.inputs.filter(row => typeof row?.pair === 'string' && typeof row?.tier === 'string' && typeof row?.fetched_at === 'string');
+}
 export async function getD1CandleBundle(pair: string, timeframe: "1m" | "5m"): Promise<D1CandleResponse> {
   return d1Get<D1CandleResponse>(
     `/internal/v1/candles?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&limit=250`
