@@ -96,7 +96,7 @@ test('pending batch reuses publication markers and leaves the final database ver
  db.rpc=async(name,args)=>{writes.push({name,args});return {data:false,error:null};};
  const analysis=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
   getD1AnalysisInputMetadata:async()=>[{pair:'EURUSD',tier:'core',fetched_at:row.fetched_at}],
-  getD1AnalysisInput:async()=>row,
+  getD1AnalysisInput:async()=>row,getD1AnalysisInputVersion:async()=>({pair:'EURUSD',tier:'core',fetchedAt:row.fetched_at}),
  },'./analysisEngine':{computeSnapshot:async()=>({tier:'core'})},'./shortTimeframeAnalysis':{runPendingShortAnalysis:async(...args)=>{short.push(args);return {failed:[]};}}})(service('analysisService'));
  const result=await analysis.runAllPendingAnalysis(false);
  assert.equal(result.failed.length,0);assert.equal(result.results[0].skipped,true);
