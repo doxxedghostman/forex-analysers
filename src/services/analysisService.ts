@@ -3,7 +3,7 @@ import { computeSnapshot } from "./analysisEngine";
 import { validateAnalysisInput, validateAnalysisInputMetadata, type AnalysisInput } from "./analysisInputs";
 import { TIER_CONFIG, type Tier } from "./snapshotConfig";
 import { runPendingShortAnalysis } from './shortTimeframeAnalysis';
-import { getD1AnalysisInput, getD1AnalysisInputMetadata } from './d1MarketData';
+import { getD1AnalysisInput, getD1AnalysisInputMetadata, getD1AnalysisInputVersion } from './d1MarketData';
 export async function analysePair(pair: string, tier: Tier, dryRun = true, knownAnalysisInputAt?: string | null, knownInput?: AnalysisInput | null) {
   const supabase = getSupabaseAdmin();
   try {
@@ -30,6 +30,11 @@ export async function analysePair(pair: string, tier: Tier, dryRun = true, known
     const { live_price, updated_at, ...analysis } = snapshot;
     if (dryRun) return { pair, ok: true, dryRun: true, inputAt: input!.fetched_at,
       direction: analysis.direction, confidence: analysis.confidence_score };
+    // Recheck the D1 fetch version after calculation. If collection advanced
+    // while analysis was running, discard this result rather than publish stale work.
+    const latestInput = await getD1AnalysisInputVersion(pair);
+    if (latestInput.tier !== tier || latestInput.fetchedAt !== input!.fetched_at)
+      return { pair, ok: true, skipped: true, reason: "D1 input superseded before publish" };
     const sourceCandleAt = input!.candles["15m"]?.at(-1)?.timestamp;
     if (!Number.isFinite(sourceCandleAt) || Number(sourceCandleAt) <= 0)
       throw new Error("Missing valid 15m source candle timestamp for publication");
