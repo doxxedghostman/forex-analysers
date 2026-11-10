@@ -59,12 +59,12 @@ test('new Deriv versions publish independently; already-analysed versions cause 
  const active=serviceSetup();const result=await active.service.runPendingShortAnalysis(false);
  assert.equal(result.total,1);assert.equal(result.results[0].published,true);
  assert.deepEqual(active.calls.map(c=>c.name),['publish_short_timeframe_analysis']);
- assert.deepEqual(Object.keys(active.calls[1].args.p_sources),['1m','5m']);
+ assert.deepEqual(Object.keys(active.calls[0].args.p_sources),['1m','5m']);
  const same=serviceSetup({same:true});assert.equal((await same.service.runPendingShortAnalysis(false)).total,0);assert.equal(same.calls.length,0);
 });
 test('shadow mode does not publish and one stale short frame does not block the other',async()=>{
  const shadow=serviceSetup();assert.equal((await shadow.service.runPendingShortAnalysis(true)).succeeded,1);
- assert.equal(shadow.calls.length,1);
+ assert.equal(shadow.calls.length,0);
  const mixed=serviceSetup({oneStale:true});const result=await mixed.service.runPendingShortAnalysis(false);
  assert.deepEqual(result.results[0].timeframes,['5m']);assert.equal(result.failed.length,0);
  assert.ok(result.unavailable.some(row=>row.pair==='EURUSD'&&row.timeframe==='1m'));
