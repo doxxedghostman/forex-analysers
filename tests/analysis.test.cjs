@@ -1,7 +1,8 @@
-const {test}=require('node:test');const assert=require('node:assert/strict');const path=require('node:path');
+const {test}=require('node:test');const assert=require('node:assert/strict');const path=require('node:path');const fs=require('node:fs');
 const {loader,fixture,fakeDb,root}=require('./helpers.cjs');
 const input=(candles=fixture())=>({pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString(),candles});
 const validation=loader()(path.join(root,'src/services/analysisInputs.ts'));
+const legacyCronAvailable=fs.existsSync(path.resolve(root,'../forex-cron/src/lib/candleCacheMerge.ts'));
 test('input validation rejects missing, stale, future, malformed and partial bundles',()=>{
  const good=input();assert.equal(validation.validateAnalysisInput(good,'EURUSD','core')['1h'].length,250);
  for(const bad of [null,{...good,tier:'extended_c'},{...good,fetched_at:'invalid'},
@@ -17,7 +18,7 @@ test('provider staleness is detected on a weekday despite a new fetch timestamp'
  assert.throws(()=>validation.validateAnalysisInput(good,'EURUSD','core',now),/Provider candles are stale/);
 });
 for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPPER','extended_c',4.5],['PLTUM','extended_c',1000]]){
- test('saved-input analysis preserves legacy non-pattern output for '+pair,async()=>{
+ test('saved-input analysis preserves legacy non-pattern output for '+pair,{skip:!legacyCronAvailable},async()=>{
   const candles=fixture(base);let oldSnapshot;let networkCalls=0;
   const db=fakeDb(q=>{
    if(q.table==='market_snapshots'&&q.operation==='upsert')oldSnapshot=q.payload;
@@ -52,18 +53,20 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
   }finally{global.fetch=originalFetch;global.setTimeout=realTimeout;}
  });
 }
-test('shadow run never publishes; active run excludes live prices and uses input version',async()=>{
- const row=input();let publishes=[];const db=fakeDb(q=>({data:q.table==='market_analysis_inputs'?row:{analysis_input_at:null},error:null}));
+test('D1-backed analysis shadow run never publishes; active run publishes only analysis fields with the D1 source version',async()=>{
+ const row=input();let publishes=[];const db=fakeDb(()=>({data:{analysis_input_at:null},error:null}));
  db.rpc=async(name,args)=>{publishes.push({name,args});return {data:true,error:null};};
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db}})(path.join(root,'src/services/analysisService.ts'));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInput:async()=>row,getD1AnalysisInputVersion:async()=>({pair:'EURUSD',tier:'core',fetchedAt:row.fetched_at})}})(path.join(root,'src/services/analysisService.ts'));
  assert.equal((await service.analysePair('EURUSD','core')).dryRun,true);assert.equal(publishes.length,0);
  assert.equal((await service.analysePair('EURUSD','core',false)).published,true);
+ assert.equal(publishes[0].name,'publish_market_analysis_from_d1');
  assert.equal(publishes[0].args.p_input_at,row.fetched_at);
+ assert.equal(publishes[0].args.p_source_candle_epoch,row.candles['15m'].at(-1).timestamp);
  for(const key of ['live_price','price_updated_at','price_source','updated_at'])assert.equal(key in publishes[0].args.p_analysis,false);
 });
-test('already analysed and stale inputs do not calculate or publish',async()=>{
- let row=input();let computed=0;const db=fakeDb(q=>({data:q.table==='market_analysis_inputs'?row:{analysis_input_at:row.fetched_at},error:null}));
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{computeSnapshot:async()=>{computed++;throw Error('should not compute');}}})(path.join(root,'src/services/analysisService.ts'));
+test('already analysed and stale D1 inputs do not calculate or publish',async()=>{
+ let row=input();let computed=0;const db=fakeDb(()=>({data:{analysis_input_at:row.fetched_at},error:null}));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInput:async()=>row},'./analysisEngine':{computeSnapshot:async()=>{computed++;throw Error('should not compute');}}})(path.join(root,'src/services/analysisService.ts'));
  assert.equal((await service.analysePair('EURUSD','core',false)).skipped,true);
  row={...row,fetched_at:'2020-01-01T00:00:00Z'};assert.equal((await service.analysePair('EURUSD','core',false)).ok,false);assert.equal(computed,0);
 });
@@ -141,58 +144,42 @@ test('never normalizes invalid metals, non-finite daily prices or inverted range
  assert.throws(()=>validation.validateAnalysisInput(reversed,'EURUSD','core',now),/Malformed or unordered/);
 });
 
-test('recovers an unanalysed recent input from another tier without Yahoo requests',async()=>{
+test('recovers a recent pending D1 input from another tier without provider requests',async()=>{
  const pending={pair:'NZDUSD',tier:'extended_b',fetched_at:new Date().toISOString(),candles:fixture()};
  const done={pair:'GBPUSD',tier:'core',fetched_at:new Date().toISOString()};
- const writes=[];let providerCalls=0;
- const db=fakeDb(q=>{
-  if(q.table==='market_analysis_inputs'){
-   if(q.filters.length)return {data:pending,error:null};
-   return {data:[{pair:pending.pair,tier:pending.tier,fetched_at:pending.fetched_at},done],error:null};
-  }
-  if(q.table==='market_snapshots'){
-   if(q.filters.length)return {data:{analysis_input_at:null},error:null};
-   return {data:[{pair:done.pair,analysis_input_at:done.fetched_at}],error:null};
-  }
-  return {data:null,error:null};
- });
+ const writes=[];let inputReads=0;
+ const db=fakeDb(q=>q.table==='market_snapshots'?{data:[{pair:done.pair,analysis_input_at:done.fetched_at}],error:null}:{data:null,error:null});
  db.rpc=async(name,args)=>{writes.push({name,args});return {data:true,error:null};};
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{
-  computeSnapshot:async()=>({tier:'extended_b',direction:'Long',confidence_score:70,live_price:1.2,updated_at:new Date().toISOString()})
- }})(path.join(root,'src/services/analysisService.ts'));
- const original=global.fetch;global.fetch=async()=>{providerCalls++;throw Error('No Yahoo');};
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
+  getD1AnalysisInputMetadata:async()=>[{pair:pending.pair,tier:pending.tier,fetched_at:pending.fetched_at},{pair:done.pair,tier:done.tier,fetched_at:done.fetched_at}],
+  getD1AnalysisInput:async pair=>{inputReads++;return pair===pending.pair?pending:null;},getD1AnalysisInputVersion:async pair=>({pair,tier:pending.tier,fetchedAt:pending.fetched_at}),
+ },'./analysisEngine':{computeSnapshot:async()=>({tier:'extended_b',direction:'Long',confidence_score:70,live_price:1.2,updated_at:new Date().toISOString()})}})(path.join(root,'src/services/analysisService.ts'));
+ const original=global.fetch;global.fetch=async()=>{throw Error('No Yahoo');};
  try {
   const results=await service.recoverPendingAnalysis('core');
-  assert.equal(results.length,1);assert.equal(results[0].pair,'NZDUSD');
-  assert.equal(results[0].published,true);assert.equal(providerCalls,0);
-  assert.equal(writes.length,1);assert.equal(writes[0].name,'publish_market_analysis');
- }finally{global.fetch=original;}
+  assert.equal(results.length,1);assert.equal(results[0].pair,'NZDUSD');assert.equal(results[0].published,true);
+  assert.equal(inputReads,1);assert.equal(writes.length,1);assert.equal(writes[0].name,'publish_market_analysis_from_d1');
+ } finally { global.fetch=original; }
 });
 
-test('recovery ignores expired saved inputs instead of replaying obsolete analysis',async()=>{
+test('recovery ignores expired D1 metadata instead of replaying obsolete analysis',async()=>{
  const now=Date.now();const stale={pair:'NZDUSD',tier:'extended_b',fetched_at:new Date(now-60*60000).toISOString()};
- const db=fakeDb(q=>({data:q.table==='market_analysis_inputs'?[stale]:[],error:null}));
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db}})(path.join(root,'src/services/analysisService.ts'));
+ const db=fakeDb(()=>({data:[],error:null}));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInputMetadata:async()=>[stale],getD1AnalysisInput:async()=>{throw Error('must not fetch stale input');}}})(path.join(root,'src/services/analysisService.ts'));
  assert.deepEqual(await service.recoverPendingAnalysis('core',2,now),[]);
 });
 
-test('independent analyser processes pending tiers without collection HTTP',async()=>{
- const rows=[{pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString()},
-  {pair:'NZDUSD',tier:'extended_b',fetched_at:new Date().toISOString()}];
- const db=fakeDb(q=>{
-  if(q.table==='market_analysis_inputs')return {data:q.filters.length?{...rows.find(r=>r.pair===q.filters[0][2]),candles:fixture()}:rows,error:null};
-  if(q.table==='market_snapshots')return {data:q.filters.length?{analysis_input_at:null}:[],error:null};
-  return {data:null,error:null};
- });
- db.rpc=async()=>({data:true,error:null});
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{
+test('independent analyser processes pending D1 tiers and publishes to Supabase without candle collection HTTP',async()=>{
+ const rows=[{pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString()},{pair:'NZDUSD',tier:'extended_b',fetched_at:new Date().toISOString()}];
+ const inputs=new Map(rows.map(row=>[row.pair,{...row,candles:fixture()}]));
+ const db=fakeDb(()=>({data:[],error:null}));let writes=0;
+ db.rpc=async(name,args)=>{assert.equal(name,'publish_market_analysis_from_d1');writes++;return {data:true,error:null};};
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInputMetadata:async()=>rows,getD1AnalysisInput:async pair=>inputs.get(pair),getD1AnalysisInputVersion:async pair=>({pair,tier:inputs.get(pair).tier,fetchedAt:inputs.get(pair).fetched_at})},'./analysisEngine':{
   computeSnapshot:async(pair,tier)=>({tier,direction:'Long',confidence_score:75,live_price:1.1,updated_at:new Date().toISOString()})
- }})(path.join(root,'src/services/analysisService.ts'));
+ },'./shortTimeframeAnalysis':{runPendingShortAnalysis:async()=>({failed:[]})}})(path.join(root,'src/services/analysisService.ts'));
  const result=await service.runAllPendingAnalysis(false);
- assert.equal(result.total,2);assert.equal(result.succeeded,2);
- assert.equal(result.failed.length,0);
+ assert.equal(result.total,2);assert.equal(result.succeeded,2);assert.equal(result.failed.length,0);assert.equal(writes,2);
 });
-
 
 test('malformed daily metal diagnostics identify the exact pair, candle and OHLC failure',()=>{
  const now=Date.now();
