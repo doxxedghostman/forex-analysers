@@ -92,7 +92,7 @@ test('short service reads D1 windows and skips a published 5m frame while retain
 });
 test('pending batch reuses publication markers and leaves the final database version check in place',async()=>{
  const row={pair:'EURUSD',tier:'core',fetched_at:new Date().toISOString(),candles:fixture()},reads=[],writes=[],short=[];
- const db=fakeDb(q=>{reads.push(q);return {data:{analysis_input_at:null},error:null};});
+ const db=fakeDb(q=>{reads.push(q);return {data:[],error:null};});
  db.rpc=async(name,args)=>{writes.push({name,args});return {data:false,error:null};};
  const analysis=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
   getD1AnalysisInputMetadata:async()=>[{pair:'EURUSD',tier:'core',fetched_at:row.fetched_at}],
@@ -101,6 +101,6 @@ test('pending batch reuses publication markers and leaves the final database ver
  const result=await analysis.runAllPendingAnalysis(false);
  assert.equal(result.failed.length,0);assert.equal(result.results[0].skipped,true);
  assert.equal(reads.filter(q=>q.table==='market_snapshots').length,1);
- assert.deepEqual(short[0][2],[{analysis_input_at:null}]);assert.equal(writes[0].name,'publish_market_analysis_from_d1');
+ assert.deepEqual(short[0][2],[]);assert.equal(writes[0].name,'publish_market_analysis_from_d1');
  assert.equal(writes[0].args.p_input_at,row.fetched_at);
 });
