@@ -50,9 +50,18 @@ async function d1Get<T>(path: string): Promise<T> {
   return body as T;
 }
 
+function normalizePair(pair: string): string {
+  const normalized = String(pair ?? "").trim().toUpperCase();
+  if (!/^[A-Z]{5,6}$/.test(normalized)) {
+    throw new Error(`Invalid pair passed to D1 client: ${JSON.stringify(pair)}`);
+  }
+  return normalized;
+}
+
 export async function getD1AnalysisInput(pair: string): Promise<AnalysisInput | null> {
+  const normalizedPair = normalizePair(pair);
   const result = await d1Get<D1InputResponse>(
-    `/internal/v1/analysis-inputs?pair=${encodeURIComponent(pair)}`
+    `/internal/v1/analysis-inputs?pair=${encodeURIComponent(normalizedPair)}`
   );
   if (!result.fetchedAt || !result.tier || !result.candles) return null;
   return {
@@ -67,8 +76,9 @@ export async function getD1AnalysisInput(pair: string): Promise<AnalysisInput | 
 export type D1AnalysisInputMetadata = { pair: string; tier: string; fetched_at: string };
 
 export async function getD1AnalysisInputVersion(pair: string): Promise<{ pair: string; tier: string | null; fetchedAt: string | null }> {
+  const normalizedPair = normalizePair(pair);
   return d1Get<{ pair: string; tier: string | null; fetchedAt: string | null }>(
-    `/internal/v1/analysis-inputs?pair=${encodeURIComponent(pair)}&metadata=1`
+    `/internal/v1/analysis-inputs?pair=${encodeURIComponent(normalizedPair)}&metadata=1`
   );
 }
 export async function getD1AnalysisInputMetadata(): Promise<D1AnalysisInputMetadata[]> {
@@ -77,8 +87,9 @@ export async function getD1AnalysisInputMetadata(): Promise<D1AnalysisInputMetad
   return result.inputs.filter(row => typeof row?.pair === 'string' && typeof row?.tier === 'string' && typeof row?.fetched_at === 'string');
 }
 export async function getD1CandleBundle(pair: string, timeframe: "1m" | "5m"): Promise<D1CandleResponse> {
+  const normalizedPair = normalizePair(pair);
   return d1Get<D1CandleResponse>(
-    `/internal/v1/candles?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&limit=250`
+    `/internal/v1/candles?pair=${encodeURIComponent(normalizedPair)}&timeframe=${timeframe}&limit=250`
   );
 }
 
