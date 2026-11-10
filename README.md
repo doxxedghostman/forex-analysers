@@ -77,8 +77,10 @@ Tests compare the analysis engine to the frozen old implementation, reject malfo
 
 # Deriv 1m and 5m analysis
 
-Apply `supabase/migrations/20261106020115_short_timeframe_analysis.sql` before
-deploying this version. Existing environment variables remain unchanged.
+Apply `supabase/migrations/20261106020115_short_timeframe_analysis.sql` and
+`supabase/migrations/20261110000000_d1_analysis_inputs.sql` before enabling this
+version in active mode. Configure `D1_API_URL` and `D1_API_SECRET` as described
+above.
 The existing five-minute `GET /api/cron/analyse?all=1` schedule now also analyses
 fresh, closed 1m/5m candles read from D1 through Account A's internal API,
 independently of longer input versions. No new cron jobs or Yahoo requests are added.
