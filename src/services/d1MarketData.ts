@@ -65,7 +65,7 @@ export async function getD1AnalysisInput(pair: string): Promise<AnalysisInput | 
 
 export async function getD1CandleBundle(pair: string, timeframe: "1m" | "5m"): Promise<D1CandleResponse> {
   return d1Get<D1CandleResponse>(
-    `/internal/v1/candles?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}`
+    `/internal/v1/candles?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&limit=250`
   );
 }
 
