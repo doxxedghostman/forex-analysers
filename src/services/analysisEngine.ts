@@ -102,7 +102,7 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
     // Higher timeframes are calendar-aligned context derived from the exact
     // saved daily input. They do not create independent trade setups.
     for (const higher of ["1w", "1mo"] as const) {
-      const summary = summarizeHigherTimeframe(dailyCandles, higher);
+      const summary = summarizeHigherTimeframe(dailyCandles, higher, Date.now(), `${pair}:${higher}`);
       if (summary) {
         multiTfSummary[higher] = {
           indicators: summary.indicators,
