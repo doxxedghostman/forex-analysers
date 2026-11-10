@@ -3,7 +3,7 @@ import { computeSnapshot } from "./analysisEngine";
 import { validateAnalysisInput, validateAnalysisInputMetadata, type AnalysisInput } from "./analysisInputs";
 import { TIER_CONFIG, type Tier } from "./snapshotConfig";
 import { runPendingShortAnalysis } from './shortTimeframeAnalysis';
-import { getD1AnalysisInput, mapWithConcurrency } from './d1MarketData';
+import { getD1AnalysisInput, getD1AnalysisInputMetadata } from './d1MarketData';
 export async function analysePair(pair: string, tier: Tier, dryRun = true, knownAnalysisInputAt?: string | null, knownInput?: AnalysisInput | null) {
   const supabase = getSupabaseAdmin();
   try {
@@ -49,15 +49,13 @@ export async function analysePair(pair: string, tier: Tier, dryRun = true, known
 // attempts cannot replace a newer snapshot.
 export async function recoverPendingAnalysis(excludedTier: Tier, maxPairs = 2, now = Date.now()) {
   const db = getSupabaseAdmin();
-  const pairs = [...new Set(Object.values(TIER_CONFIG).flatMap(config => [...config.pairs]))];
   const [inputs, snapshots] = await Promise.all([
-    mapWithConcurrency(pairs, 5, pair => getD1AnalysisInput(pair)),
+    getD1AnalysisInputMetadata(),
     db.from('market_snapshots').select('pair,analysis_input_at'),
   ]);
   if (snapshots.error) throw new Error('Could not read analysed input versions: ' + snapshots.error.message);
   const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
-  const pending = inputs.filter((row): row is AnalysisInput => {
-    if (!row) return false;
+  const pending = inputs.filter(row => {
     const planned = row.tier as Tier;
     if (!Object.hasOwn(TIER_CONFIG, planned) || planned === excludedTier) return false;
     const fetchedAt = Date.parse(row.fetched_at);
@@ -67,7 +65,7 @@ export async function recoverPendingAnalysis(excludedTier: Tier, maxPairs = 2, n
   const recovered = [];
   for (const input of pending.slice(0, Math.max(0, Math.min(2, maxPairs)))) {
     const previous = completed.get(String(input.pair));
-    recovered.push(await analysePair(input.pair, input.tier as Tier, false, previous ? new Date(previous).toISOString() : null, input));
+    recovered.push(await analysePair(input.pair, input.tier as Tier, false, previous ? new Date(previous).toISOString() : null));
   }
   return recovered;
 }
@@ -99,22 +97,21 @@ export async function runAnalysisBatch(tier: Tier, dryRun = true) {
  *  one bad instrument never blocks another. No Yahoo/collector HTTP calls. */
 export async function runAllPendingAnalysis(dryRun = true) {
   const db = getSupabaseAdmin();
-  const pairs = [...new Set(Object.values(TIER_CONFIG).flatMap(config => [...config.pairs]))];
   const [inputs, snapshots] = await Promise.all([
-    mapWithConcurrency(pairs, 5, pair => getD1AnalysisInput(pair)),
+    getD1AnalysisInputMetadata(),
     db.from('market_snapshots').select('pair,analysis_input_at,short_analysis_sources,multi_tf'),
   ]);
   if (snapshots.error) throw new Error('Failed to load analysed input versions: ' + snapshots.error.message);
   const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
-  const pending = inputs.filter((row): row is AnalysisInput => Boolean(row) && Object.hasOwn(TIER_CONFIG, row.tier)
-    && Number.isFinite(Date.parse(row.fetched_at)) && Date.parse(row.fetched_at) > (completed.get(String(row.pair)) ?? 0))
+  const pending = inputs.filter(row => Object.hasOwn(TIER_CONFIG, row.tier) && Number.isFinite(Date.parse(row.fetched_at))
+    && Date.parse(row.fetched_at) > (completed.get(String(row.pair)) ?? 0))
     .sort((a, b) => Date.parse(a.fetched_at) - Date.parse(b.fetched_at));
   console.info('[analysis-pending]', { count: pending.length, dryRun });
   const results: Awaited<ReturnType<typeof analysePair>>[] = [];
   for (let i = 0; i < pending.length; i += 3) {
     const group = await Promise.all(pending.slice(i, i + 3).map(input => {
       const previous = completed.get(String(input.pair));
-      return analysePair(input.pair, input.tier as Tier, dryRun, previous ? new Date(previous).toISOString() : null, input);
+      return analysePair(input.pair, input.tier as Tier, dryRun, previous ? new Date(previous).toISOString() : null);
     }));
     results.push(...group);
   }
