@@ -14,7 +14,9 @@ for(const pair of 'EURJPY EURGBP AUDJPY EURAUD GBPAUD EURCHF CADJPY CHFJPY AUDCA
    const snapshot=await computeSnapshot(pair,tier,fixture(pair.endsWith('JPY')?150:1.1));
    assert.equal(snapshot.pair,pair);assert.equal(snapshot.tier,tier);
    assert.deepEqual(Object.keys(snapshot.setups),['15m','1h','4h','1d']);
-   assert.deepEqual(Object.keys(snapshot.multi_tf),['15m','1h','4h','1d']);
+   assert.deepEqual(Object.keys(snapshot.multi_tf),['15m','1h','4h','1d','1w','1mo']);
+   assert.equal(snapshot.multi_tf['1w'].derived.timeframe,'1w');
+   assert.equal(snapshot.multi_tf['1mo'].derived.timeframe,'1mo');
    assert.equal(requests,0);
   }finally{global.fetch=original;}
  });

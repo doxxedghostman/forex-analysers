@@ -31,7 +31,7 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
   mocks['../lib/supabaseAdmin']={getSupabaseAdmin:()=>db};mocks['./alertService']={checkAlertsForPair:async()=>{}};
   for(const module of ['marketAnalyzer','smcAnalysis','structureBridge','chartPatterns','analysisTypes','snapshotConfig'])
    mocks['./'+module]=loader()(path.join(root,'src/services',module+'.ts'));
-  mocks['../lib/candleCacheMerge']=loader()(path.resolve(root,'../forex-cron/src/lib/candleCacheMerge.ts'));
+  mocks['../lib/candleCacheMerge']=loader()(path.join(root,'tests/fixtures/candleCacheMerge.fixture.ts'));
   mocks['./aiPredictor']=loader(mocks)(path.join(root,'tests/fixtures/legacyPredictor.fixture.ts'));
   const legacy=loader(mocks)(path.join(root,'tests/fixtures/legacySnapshot.fixture.ts'));
   const originalFetch=global.fetch;global.fetch=async()=>{networkCalls++;throw Error('No provider requests allowed');};
@@ -41,13 +41,24 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
    assert.equal((await legacy.runSnapshotForPair(pair,tier)).ok,true);
    const engine=loader()(path.join(root,'src/services/analysisEngine.ts'));
    const fresh=await engine.computeSnapshot(pair,tier,candles);
-   delete fresh.updated_at;delete oldSnapshot.updated_at;
-   // Pattern votes intentionally changed: validate them in scan-patterns.test.cjs.
-   delete fresh.patterns_by_tf;delete oldSnapshot.patterns_by_tf;
-   for(const summary of Object.values(fresh.multi_tf)){
-    assert.equal(summary.patternVersion,2);delete summary.patternVersion;
+   const comparableFresh=JSON.parse(JSON.stringify(fresh));
+   const comparableLegacy=JSON.parse(JSON.stringify(oldSnapshot));
+   delete comparableFresh.updated_at;delete comparableLegacy.updated_at;
+   // Pattern votes and calendar-derived higher timeframes are intentionally new.
+   delete comparableFresh.patterns_by_tf;delete comparableLegacy.patterns_by_tf;
+   delete comparableFresh.weekly_trend;delete comparableLegacy.weekly_trend;
+   delete comparableFresh.multi_tf['1w'];delete comparableFresh.multi_tf['1mo'];
+   for(const tf of ['15m','1h','4h','1d']){
+    assert.equal(comparableFresh.multi_tf[tf].patternVersion,2);
+    delete comparableFresh.multi_tf[tf].patternVersion;
+    delete comparableLegacy.multi_tf[tf].patternVersion;
    }
-   assert.deepEqual(JSON.parse(JSON.stringify(fresh)),JSON.parse(JSON.stringify(oldSnapshot)));
+   assert.deepEqual(comparableFresh,comparableLegacy);
+   assert.equal(fresh.multi_tf['1w'].derived.timeframe,'1w');
+   assert.equal(fresh.multi_tf['1w'].derived.indicatorHistorySufficient,true);
+   assert.equal(fresh.multi_tf['1mo'].derived.timeframe,'1mo');
+   assert.equal(fresh.multi_tf['1mo'].derived.indicatorHistorySufficient,false);
+   assert.ok(fresh.weekly_trend.weeks.every(week=>new Date(week.weekStart).getUTCDay()===1));
    assert.equal(networkCalls,0);
   }finally{global.fetch=originalFetch;global.setTimeout=realTimeout;}
  });

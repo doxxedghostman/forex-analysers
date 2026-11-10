@@ -7,76 +7,7 @@ import { CHART_PATTERN_VERSION, detectChartPatterns } from "./chartPatterns";
 import type { MarketStructure, PatternSet } from "./analysisTypes";
 import { SNAPSHOT_TIMEFRAMES, ANCHOR_INTERVAL, type Tier } from "./snapshotConfig";
 import { createCandleCalculationCache } from './candleCalculationCache';
-
-interface WeeklyBucket {
-  weekStart: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  direction: "up" | "down" | "flat";
-}
-
-/**
- * Groups daily candles into 5-candle (trading week) buckets and derives
- * a simple weekly trend summary — used so the AI can answer "what about
- * next week" style questions using real historical pattern instead of
- * failing on a nonexistent "1w" timeframe.
- */
-function computeWeeklyTrend(dailyCandles: Candle[]) {
-  const buckets: WeeklyBucket[] = [];
-  for (let i = 0; i < dailyCandles.length; i += 5) {
-    const chunk = dailyCandles.slice(i, i + 5);
-    if (chunk.length === 0) continue;
-
-    const open = chunk[0].open;
-    const close = chunk[chunk.length - 1].close;
-    const high = Math.max(...chunk.map((c) => c.high));
-    const low = Math.min(...chunk.map((c) => c.low));
-    const direction: WeeklyBucket["direction"] =
-      close > open ? "up" : close < open ? "down" : "flat";
-
-    buckets.push({
-      weekStart: chunk[0].timestamp ? String(chunk[0].timestamp) : "",
-      open,
-      high,
-      low,
-      close,
-      direction,
-    });
-  }
-
-  // Streak = how many of the most recent weeks moved the same direction
-  let streak = 0;
-  let streakDirection: WeeklyBucket["direction"] | null = null;
-  for (let i = buckets.length - 1; i >= 0; i--) {
-    const dir = buckets[i].direction;
-    if (streakDirection === null) {
-      streakDirection = dir;
-      streak = 1;
-    } else if (dir === streakDirection) {
-      streak++;
-    } else {
-      break;
-    }
-  }
-
-  const recentWeeks = buckets.slice(-8); // last ~8 weeks for context
-  const upCount = recentWeeks.filter((w) => w.direction === "up").length;
-  const downCount = recentWeeks.filter((w) => w.direction === "down").length;
-
-  return {
-    weeks: buckets,
-    weekCount: buckets.length,
-    streak,
-    streakDirection,
-    recentSummary: {
-      lastNWeeks: recentWeeks.length,
-      up: upCount,
-      down: downCount,
-    },
-  };
-}
+import { computeWeeklyTrend, summarizeHigherTimeframe, type DerivedHigherTimeframeSummary } from "./higherTimeframes";
 
 /**
  * Runs smcAnalysis structure/liquidity detection + chartPatterns geometry
@@ -133,7 +64,7 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
   const anchorCandles = multiTfCandles[ANCHOR_INTERVAL];
     const multiTfSummary: Record<
       string,
-      { indicators: Partial<IndicatorReport>; lastClose: number | null; patternVersion?: number }
+      { indicators: Partial<IndicatorReport>; lastClose: number | null; patternVersion?: number; derived?: DerivedHigherTimeframeSummary }
     > = {};
     // NEW: per-timeframe structure (BOS/CHoCH/equal highs/lows/sweep) and
     // chart patterns (double top/bottom, H&S) — previously structure was
@@ -167,8 +98,20 @@ export async function computeSnapshot(pair: string, tier: Tier, multiTfCandles: 
       multiTfSummary[tf].patternVersion = CHART_PATTERN_VERSION;
     }
 
-    const dailyCandles = multiTfCandles["1d"];
-    const weeklyTrend = dailyCandles?.length
+    const dailyCandles = multiTfCandles["1d"] ?? [];
+    // Higher timeframes are calendar-aligned context derived from the exact
+    // saved daily input. They do not create independent trade setups.
+    for (const higher of ["1w", "1mo"] as const) {
+      const summary = summarizeHigherTimeframe(dailyCandles, higher, Date.now(), `${pair}:${higher}`);
+      if (summary) {
+        multiTfSummary[higher] = {
+          indicators: summary.indicators,
+          lastClose: summary.lastClose,
+          derived: summary,
+        };
+      }
+    }
+    const weeklyTrend = dailyCandles.length
       ? computeWeeklyTrend(dailyCandles)
       : null;
 
