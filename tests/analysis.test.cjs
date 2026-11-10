@@ -55,7 +55,7 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
 test('D1-backed analysis shadow run never publishes; active run publishes only analysis fields with the D1 source version',async()=>{
  const row=input();let publishes=[];const db=fakeDb(()=>({data:{analysis_input_at:null},error:null}));
  db.rpc=async(name,args)=>{publishes.push({name,args});return {data:true,error:null};};
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInput:async()=>row}})(path.join(root,'src/services/analysisService.ts'));
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInput:async()=>row,getD1AnalysisInputVersion:async()=>({pair:'EURUSD',tier:'core',fetchedAt:row.fetched_at})}})(path.join(root,'src/services/analysisService.ts'));
  assert.equal((await service.analysePair('EURUSD','core')).dryRun,true);assert.equal(publishes.length,0);
  assert.equal((await service.analysePair('EURUSD','core',false)).published,true);
  assert.equal(publishes[0].name,'publish_market_analysis_from_d1');
@@ -151,7 +151,7 @@ test('recovers a recent pending D1 input from another tier without provider requ
  db.rpc=async(name,args)=>{writes.push({name,args});return {data:true,error:null};};
  const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
   getD1AnalysisInputMetadata:async()=>[{pair:pending.pair,tier:pending.tier,fetched_at:pending.fetched_at},{pair:done.pair,tier:done.tier,fetched_at:done.fetched_at}],
-  getD1AnalysisInput:async pair=>{inputReads++;return pair===pending.pair?pending:null;},
+  getD1AnalysisInput:async pair=>{inputReads++;return pair===pending.pair?pending:null;},getD1AnalysisInputVersion:async pair=>({pair,tier:pending.tier,fetchedAt:pending.fetched_at}),
  },'./analysisEngine':{computeSnapshot:async()=>({tier:'extended_b',direction:'Long',confidence_score:70,live_price:1.2,updated_at:new Date().toISOString()})}})(path.join(root,'src/services/analysisService.ts'));
  const original=global.fetch;global.fetch=async()=>{throw Error('No Yahoo');};
  try {
@@ -173,7 +173,7 @@ test('independent analyser processes pending D1 tiers and publishes to Supabase 
  const inputs=new Map(rows.map(row=>[row.pair,{...row,candles:fixture()}]));
  const db=fakeDb(()=>({data:[],error:null}));let writes=0;
  db.rpc=async(name,args)=>{assert.equal(name,'publish_market_analysis_from_d1');writes++;return {data:true,error:null};};
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInputMetadata:async()=>rows,getD1AnalysisInput:async pair=>inputs.get(pair)},'./analysisEngine':{
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInputMetadata:async()=>rows,getD1AnalysisInput:async pair=>inputs.get(pair),getD1AnalysisInputVersion:async pair=>({pair,tier:inputs.get(pair).tier,fetchedAt:inputs.get(pair).fetched_at})},'./analysisEngine':{
   computeSnapshot:async(pair,tier)=>({tier,direction:'Long',confidence_score:75,live_price:1.1,updated_at:new Date().toISOString()})
  },'./shortTimeframeAnalysis':{runPendingShortAnalysis:async()=>({failed:[]})}})(path.join(root,'src/services/analysisService.ts'));
  const result=await service.runAllPendingAnalysis(false);
