@@ -102,7 +102,7 @@ export async function runAllPendingAnalysis(dryRun = true) {
   const pairs = [...new Set(Object.values(TIER_CONFIG).flatMap(config => [...config.pairs]))];
   const [inputs, snapshots] = await Promise.all([
     mapWithConcurrency(pairs, 5, pair => getD1AnalysisInput(pair)),
-    db.from('market_snapshots').select('pair,analysis_input_at,short_analysis_sources'),
+    db.from('market_snapshots').select('pair,analysis_input_at,short_analysis_sources,multi_tf'),
   ]);
   if (snapshots.error) throw new Error('Failed to load analysed input versions: ' + snapshots.error.message);
   const completed = new Map((snapshots.data ?? []).map(row => [String(row.pair), row.analysis_input_at ? Date.parse(row.analysis_input_at) : 0]));
