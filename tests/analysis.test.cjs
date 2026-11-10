@@ -31,7 +31,7 @@ for(const [pair,tier,base] of [['EURUSD','core',1.1],['USDJPY','core',150],['CPP
   mocks['../lib/supabaseAdmin']={getSupabaseAdmin:()=>db};mocks['./alertService']={checkAlertsForPair:async()=>{}};
   for(const module of ['marketAnalyzer','smcAnalysis','structureBridge','chartPatterns','analysisTypes','snapshotConfig'])
    mocks['./'+module]=loader()(path.join(root,'src/services',module+'.ts'));
-  mocks['../lib/candleCacheMerge']=loader()(path.resolve(root,'../forex-cron/src/lib/candleCacheMerge.ts'));
+  mocks['../lib/candleCacheMerge']=loader()(path.join(root,'tests/fixtures/candleCacheMerge.fixture.ts'));
   mocks['./aiPredictor']=loader(mocks)(path.join(root,'tests/fixtures/legacyPredictor.fixture.ts'));
   const legacy=loader(mocks)(path.join(root,'tests/fixtures/legacySnapshot.fixture.ts'));
   const originalFetch=global.fetch;global.fetch=async()=>{networkCalls++;throw Error('No provider requests allowed');};
