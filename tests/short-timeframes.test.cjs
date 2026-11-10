@@ -44,22 +44,21 @@ test('short engine passes the most recently closed bar to pattern detection and 
 });
 function serviceSetup({same=false,stale=false,dryError=false,oneStale=false}={}) {
  const windows=shortWindows(),calls=[];
- const sources=['1m','5m'].map(timeframe=>({pair:'EURUSD',timeframe,source_candle_at:new Date((windows[timeframe].at(-1).timestamp-(stale?3600:0))*1000).toISOString()}));
+ if(stale)for(const tf of ['1m','5m'])windows[tf]=windows[tf].map(c=>({...c,timestamp:c.timestamp-3600}));
+ if(oneStale)windows['1m']=windows['1m'].map(c=>({...c,timestamp:c.timestamp-3600}));
  const markers=same?Object.fromEntries(['1m','5m'].map(tf=>[tf,windows[tf].at(-1).timestamp])):{};
- const db=fakeDb(q=>({data:q.table==='market_candle_cache'?sources:q.table==='market_snapshots'?[{pair:'EURUSD',short_analysis_sources:markers}]:[],error:null}));
- db.rpc=async(name,args)=>{calls.push({name,args});
-  if(name==='get_short_analysis_bundle')return {data:{candles:oneStale?{...windows,'1m':windows['1m'].map(c=>({...c,timestamp:c.timestamp-3600}))}:windows,higher_indicators:{}},error:null};
-  return dryError?{data:null,error:{message:'publish unavailable'}}:{data:true,error:null};
- };
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./analysisEngine':{
-  computeShortTimeframeSnapshot:async()=>({multi_tf:{},patterns_by_tf:{},structure_by_tf:{},setups:{}}),
- }})(path.join(root,'src/services/shortTimeframeAnalysis.ts'));
+ const db=fakeDb(q=>({data:q.table==='market_snapshots'?[{pair:'EURUSD',short_analysis_sources:markers,multi_tf:{}}]:[],error:null}));
+ db.rpc=async(name,args)=>{calls.push({name,args});return dryError?{data:null,error:{message:'publish unavailable'}}:{data:true,error:null};};
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{
+  getD1CandleBundle:async(pair,tf)=>({pair,timeframe:tf,candles:pair==='EURUSD'?windows[tf]:[],fetchedAt:new Date().toISOString(),sourceCandleAt:null,candleCount:windows[tf]?.length??0}),
+  mapWithConcurrency:async(values,_limit,task)=>Promise.all(values.map(task)),
+ },'./analysisEngine':{computeShortTimeframeSnapshot:async()=>({multi_tf:{},patterns_by_tf:{},structure_by_tf:{},setups:{}})}})(path.join(root,'src/services/shortTimeframeAnalysis.ts'));
  return {service,calls};
 }
 test('new Deriv versions publish independently; already-analysed versions cause no candle download',async()=>{
  const active=serviceSetup();const result=await active.service.runPendingShortAnalysis(false);
  assert.equal(result.total,1);assert.equal(result.results[0].published,true);
- assert.deepEqual(active.calls.map(c=>c.name),['get_short_analysis_bundle','publish_short_timeframe_analysis']);
+ assert.deepEqual(active.calls.map(c=>c.name),['publish_short_timeframe_analysis']);
  assert.deepEqual(Object.keys(active.calls[1].args.p_sources),['1m','5m']);
  const same=serviceSetup({same:true});assert.equal((await same.service.runPendingShortAnalysis(false)).total,0);assert.equal(same.calls.length,0);
 });
@@ -78,7 +77,7 @@ test('stale/missing sources are reported without a provider request; failed publ
 });
 test('all-pending cron performs the short pass even when no longer-frame input is pending',async()=>{
  let calls=0;const db=fakeDb(()=>({data:[],error:null}));
- const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./shortTimeframeAnalysis':{
+ const service=loader({'../lib/supabaseAdmin':{getSupabaseAdmin:()=>db},'./d1MarketData':{getD1AnalysisInputMetadata:async()=>[]},'./shortTimeframeAnalysis':{
   runPendingShortAnalysis:async dryRun=>{calls++;assert.equal(dryRun,false);return {total:1,failed:[],succeeded:1};},
  }})(path.join(root,'src/services/analysisService.ts'));
  const result=await service.runAllPendingAnalysis(false);
