@@ -7,7 +7,8 @@ The main app keeps reading the same Supabase `market_snapshots` and `market_sent
 
 - Read `market_analysis_inputs`: one atomic input bundle per instrument, published by forex-cron.
 - Preserve the exact fetched analysis windows: up to 250 candles for 15m/1h/4h, up to 400 for 1d.
-- Calculate indicators, SMC, chart patterns, multi-timeframe setups and weekly trend.
+- Calculate indicators, SMC, chart patterns and the existing 15m/1h/4h/1d trade setups.
+- Derive 1W and 1M background context from saved daily candles using Monday-based UTC weeks and UTC calendar months. Only completed periods feed higher-timeframe indicators; RSI/EMA/MACD/ATR are withheld until 35 completed periods exist. These derived frames do not create independent trade setups.
 - Publish analysis through a version-checked database function. Never overwrite live prices, price-source timestamps or alert state.
 - Calculate market sentiment using snapshot breadth, Yahoo DXY/VIX and cached CFTC positioning.
 
