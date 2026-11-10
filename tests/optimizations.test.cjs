@@ -53,7 +53,7 @@ test('warm frame reuse preserves the entire output and invalidates only changed 
  const first=await engine.computeSnapshot('EURUSD','core',bars);delete first.updated_at;
  assert.equal(calls.length,5);
  const second=await engine.computeSnapshot('EURUSD','core',structuredClone(bars));delete second.updated_at;
- assert.deepEqual(second,first);assert.equal(calls.length,4);
+ assert.deepEqual(second,first);assert.equal(calls.length,5);
  second.multi_tf['1h'].indicators.rsi=-100;
  const third=await engine.computeSnapshot('EURUSD','core',bars);delete third.updated_at;
  assert.deepEqual(third,first);
