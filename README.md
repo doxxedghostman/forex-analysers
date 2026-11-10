@@ -5,13 +5,13 @@ The main app keeps reading the same Supabase `market_snapshots` and `market_sent
 
 ## Responsibilities
 
-- Read `market_analysis_inputs`: one atomic input bundle per instrument, published by forex-cron.
+- Read the atomic `market_analysis_inputs` bundle from Cloudflare D1 through Account A's authenticated internal API.
 - Preserve the exact fetched analysis windows: up to 250 candles for 15m/1h/4h, up to 400 for 1d.
 - Calculate indicators, SMC, chart patterns, multi-timeframe setups and weekly trend.
-- Publish analysis through a version-checked database function. Never overwrite live prices, price-source timestamps or alert state.
+- Publish analysis into Supabase `market_snapshots` through a version-checked RPC. Never overwrite live prices, price-source timestamps or alert state.
 - Calculate market sentiment using snapshot breadth, Yahoo DXY/VIX and cached CFTC positioning.
 
-Pair analysis never downloads candles, calls DeepSeek, or sends notifications. Missing, materially malformed or stale inputs leave the previous successful snapshot untouched. Only daily spot-FX candles with very small Yahoo high/low boundary inconsistencies (at most 0.1% of price AND 15% of reported bar range) are normalized in a non-mutating, analysis-only copy. Other timeframes and metals remain strictly validated. The original raw Yahoo inputs and cached history are never rewritten, and rejected inputs still cannot publish. The analysis-only correction can slightly change daily indicators. The analyser logs `[analysis-daily-ohlc-normalized]` when it repairs an input. A missing timeframe cannot trigger a Yahoo fallback. Snapshot formulas are unchanged; this move does not fix or retune the strategy.
+Pair analysis never downloads candles from Yahoo/Deriv, calls DeepSeek, or sends notifications. Longer-frame and Deriv 1m/5m candle reads come from D1; Supabase is used only for analysis output/state and market sentiment. Missing, materially malformed or stale inputs leave the previous successful snapshot untouched. Only daily spot-FX candles with very small Yahoo high/low boundary inconsistencies (at most 0.1% of price AND 15% of reported bar range) are normalized in a non-mutating, analysis-only copy. Other timeframes and metals remain strictly validated. The original raw Yahoo inputs and cached history are never rewritten, and rejected inputs still cannot publish. The analysis-only correction can slightly change daily indicators. The analyser logs `[analysis-daily-ohlc-normalized]` when it repairs an input. A missing timeframe cannot trigger a Yahoo fallback. Snapshot formulas are unchanged; this move does not fix or retune the strategy.
 
 The collector owns the deep chart caches, current prices and alerts. The handoff table preserves the raw analysis windows rather than replacing them with deeper/repaired chart history, which could change indicator results. The input timestamp is a fetch version, not a candle-close timestamp. Source age is checked separately during open market hours.
 
@@ -20,11 +20,13 @@ The collector owns the deep chart caches, current prices and alerts. The handoff
 | Variable | Required | Meaning |
 | --- | --- | --- |
 | `SUPABASE_URL` | Yes | Same project as forex-cron/main app |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Server-only database key; never NEXT_PUBLIC |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Server-only key for writing `market_snapshots` and `market_sentiment`; never NEXT_PUBLIC |
+| `D1_API_URL` | Yes | Account A Worker origin, e.g. `https://forex-candle-collector-a.<account>.workers.dev` |
+| `D1_API_SECRET` | Yes | Same secret as Account A Worker `D1_API_SECRET`; sent only as a Bearer header |
 | `CRON_SECRET` | Yes | Generate a distinct secret for this worker |
 | `ANALYSIS_MODE` | No | `shadow` (default) computes without writes; `active` publishes |
 
-No DeepSeek or Firebase environment variables are needed. No API key is used for the public DXY/VIX/CFTC sources.
+No DeepSeek or Firebase environment variables are needed. No API key is used for the public DXY/VIX/CFTC sources. The analyser does not connect to D1 directly; it uses the Account A Worker's authenticated `/internal/v1/` API.
 
 ## Routes
 
@@ -41,10 +43,10 @@ Responses include per-pair outcomes. Partial/total failures return 503 so they a
 
 ## Database preparation
 
-`database/analysis-handoff.sql` is the schema reference for Supabase migration `separate_market_data_and_analysis_handoff`. It adds the handoff table, `market_snapshots.analysis_input_at`, and two service-role-only functions. The table has RLS with no client policies intentionally: only server workers access it. Functions use invoker security. No existing cache rows are replaced.
+`database/analysis-handoff.sql` documents the original handoff design. Candle inputs now live in D1 `market_analysis_inputs`; Supabase retains `market_snapshots.analysis_input_at` and the version-checked analysis publication RPC. Apply `supabase/migrations/20261110000000_d1_analysis_inputs.sql` to add `publish_market_analysis_from_d1` and remove the obsolete requirement for short Deriv candles to also exist in Supabase. Apply it before switching the deployed analyser to active mode.
 
-- `publish_market_analysis_input`: only accepts a newer fetch version.
-- `publish_market_analysis`: locks/checks that input version and updates only analysis fields. Repeated/older analyses cannot overwrite newer results or fresh prices.
+- The collector's D1 API owns and serves the newest saved candle input version.
+- `publish_market_analysis_from_d1`: accepts the D1 fetch version and source candle timestamp, and updates only analysis fields when the incoming version is newer. Repeated/older analyses cannot overwrite newer results or fresh prices.
 
 This schema was applied and transactionally verified during the repository split. Do not apply it to a different project without checking the target.
 
@@ -52,11 +54,11 @@ This schema was applied and transactionally verified during the repository split
 
 **Use the existing collector cron-job.org jobs. Do not create nine analyser jobs.** The collector now calls this worker automatically after each successful data batch and forwards its existing sentiment job here. Normal collector URLs using `?secret=...` keep working without Advanced headers.
 
-- On this analyser: use the existing shared Supabase variables, its own `CRON_SECRET`, and initially `ANALYSIS_MODE=shadow`.
+- On this analyser: set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `D1_API_URL` (Account A Worker origin), `D1_API_SECRET` (same secret configured on Account A), its own `CRON_SECRET`, and initially `ANALYSIS_MODE=shadow`.
 - On forex-cron: copy this analyser's CRON_SECRET into `ANALYSER_CRON_SECRET`. Keep its original collector CRON_SECRET unchanged.
 - For a controlled cutover, pause snapshot/sentiment timers, wait for in-flight legacy requests (maximum 60 seconds), and deploy collector `SNAPSHOT_MODE=data`. The two-minute price/alert timer stays running.
-- Manually test an existing collector snapshot URL. During weekends add authenticated `force=1` to that one URL. The collector saves candle inputs first, then calls this worker and includes its result. Shadow results must have `dryRun:true`; HTTP 200 alone is not proof of publication.
-- After verification, deploy this analyser with `ANALYSIS_MODE=active` and resume the same collector timers. Confirm published input versions and database timestamps. No new cron-job.org URLs or analyser timers are necessary.
+- Manually test an existing collector snapshot URL. During weekends add authenticated `force=1` to that one URL. The collector saves candle inputs in D1 first, then calls this worker and includes its result. Shadow results must have `dryRun:true`; HTTP 200 alone is not proof of publication.
+- After verification, deploy this analyser with `ANALYSIS_MODE=active` and resume the same collector timers. Confirm the analyser reports D1 input versions and Supabase `market_snapshots.analysis_input_at` advances. No new cron-job.org URLs or analyser timers are necessary.
 
 The existing five-minute core job also rotates the new cross batches: D in one five-minute slot, E in the next, F+G in the next, then repeats. Thus all new crosses run every 15 minutes with no extra timers. Core/A/B/C cadence remains unchanged. Logical batch IDs stay core + A-G; they do not imply eight external analyser timers. Do not also schedule D-G manually, or run standalone analyser/sentiment timers, when using the automatic flow. Direct authenticated endpoints remain available for manual diagnostics.
 
@@ -76,8 +78,8 @@ Tests compare the analysis engine to the frozen old implementation, reject malfo
 Apply `supabase/migrations/20261106020115_short_timeframe_analysis.sql` before
 deploying this version. Existing environment variables remain unchanged.
 The existing five-minute `GET /api/cron/analyse?all=1` schedule now also analyses
-fresh, closed 1m/5m candles saved by the Deriv listener, independently of longer
-input versions. No new cron jobs or Yahoo requests are added.
+fresh, closed 1m/5m candles read from D1 through Account A's internal API,
+independently of longer input versions. No new cron jobs or Yahoo requests are added.
 
 Each short frame gets indicators (including EMA200), structure, chart patterns
 and its own deterministic setup in `market_snapshots.multi_tf`,
@@ -87,7 +89,7 @@ prevents duplicate work and older results replacing newer results. Longer-frame
 publishes preserve the short entries; short publishes do not change the 4H
 recommendation, live quote, longer-frame timestamps or weekly trend.
 
-Only the latest 250 saved bars are read per available frame. Require at least
+Only the latest 250 saved bars are read per available frame from D1. The Supabase publication RPC stores the analysis result and per-frame source version, but does not need a duplicate candle copy. Require at least
 200 valid, ordered closed bars; stale or unsupported frames are reported in
 `shortTimeframes.unavailable` without blocking other frames. Deriv currently
 covers 20 instruments; CADJPY, CHFJPY and CPPER have no saved Deriv short bars.
